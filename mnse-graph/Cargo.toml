@@ -1,0 +1,26 @@
+[package]
+name        = "mnse-graph"
+description = "Causal knowledge graph for MNSE (Historian Model, nodes, edges, sessions, bursts, STM)"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+repository.workspace = true
+
+[dependencies]
+mnse-types = { path = "../mnse-types" }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+rusqlite   = { workspace = true }
+chrono     = { workspace = true }
+uuid       = { workspace = true }
+sha2       = { workspace = true }
+hex        = { workspace = true }
+anyhow     = { workspace = true }
+tracing    = { workspace = true }
+tokio      = { workspace = true }
+url        = "2"
+md5        = "0.7"
+
+[dev-dependencies]
+tempfile   = { workspace = true }

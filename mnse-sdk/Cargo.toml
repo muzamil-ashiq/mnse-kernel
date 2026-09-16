@@ -1,0 +1,22 @@
+[package]
+name        = "mnse-sdk"
+description = "Client SDK for MNSE Kernel — HTTP & Unix Socket communication for adapters and applications"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+repository.workspace = true
+
+[dependencies]
+mnse-types = { path = "../mnse-types" }
+
+tokio      = { workspace = true }
+reqwest    = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+uuid       = { workspace = true }
+chrono     = { workspace = true }
+anyhow     = { workspace = true }
+thiserror  = { workspace = true }
+tracing    = { workspace = true }
+dirs       = "5.0"

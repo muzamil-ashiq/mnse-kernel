@@ -1,0 +1,24 @@
+[package]
+name        = "mnse-ledger"
+description = "SQLite-backed event ledger with FTS5 search and multi-tier archiving"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+repository.workspace = true
+
+[dependencies]
+mnse-types = { path = "../mnse-types" }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+rusqlite   = { workspace = true }
+chrono     = { workspace = true }
+uuid       = { workspace = true }
+sha2       = { workspace = true }
+hex        = { workspace = true }
+anyhow     = { workspace = true }
+tracing    = { workspace = true }
+dirs       = "5.0"
+
+[dev-dependencies]
+tempfile   = { workspace = true }

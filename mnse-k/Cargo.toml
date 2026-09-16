@@ -1,0 +1,31 @@
+[package]
+name        = "mnse-k"
+description = "K Language compiler, interpreter, behavior engine, and CLI shell for MNSE Kernel"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+repository.workspace = true
+
+[[bin]]
+name = "k"
+path = "src/main.rs"
+
+[dependencies]
+mnse-types  = { path = "../mnse-types" }
+mnse-ledger = { path = "../mnse-ledger" }
+mnse-sdk    = { path = "../mnse-sdk" }
+
+tokio      = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+rustyline  = { workspace = true }
+clap       = { workspace = true }
+anyhow     = { workspace = true }
+thiserror  = { workspace = true }
+tracing    = { workspace = true }
+chrono     = { workspace = true }
+dirs       = "5.0"
+
+[dev-dependencies]
+tempfile   = { workspace = true }

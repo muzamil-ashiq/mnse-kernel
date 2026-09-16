@@ -1,0 +1,15 @@
+[package]
+name        = "mnse-types"
+description = "Shared types for the MNSE kernel — EventType, Event, ContextSnapshot"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+repository.workspace = true
+
+[dependencies]
+serde      = { workspace = true }
+serde_json = { workspace = true }
+chrono     = { workspace = true }
+uuid       = { workspace = true }
+dirs       = "5.0"

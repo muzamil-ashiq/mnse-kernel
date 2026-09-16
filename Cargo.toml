@@ -1,0 +1,61 @@
+[workspace]
+resolver = "2"
+members = [
+    "mnse-types",
+    "mnse-ledger",
+    "mnse-graph",
+    "mnse-kernel",
+    "mnse-sdk",
+    "mnse-k",
+    "adapters/os",
+]
+
+[workspace.package]
+version      = "2.0.0"
+edition      = "2021"
+authors      = ["Muzamil <bmuzamil38@gmail.com>"]
+license      = "MIT"
+repository   = "https://github.com/bmuzamil38/mnse"
+rust-version = "1.80"
+
+[workspace.dependencies]
+# Async runtime
+tokio        = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+# Web / IPC
+axum         = { version = "0.7", features = ["ws"] }
+hyper        = { version = "1" }
+tower        = { version = "0.4" }
+tower-http   = { version = "0.5", features = ["cors", "trace"] }
+
+# Serialization
+serde        = { version = "1", features = ["derive"] }
+serde_json   = { version = "1" }
+toml         = { version = "0.8" }
+
+# Database
+rusqlite     = { version = "0.31", features = ["bundled", "backup"] }
+
+# Scripting
+rhai         = { version = "1", features = ["sync"] }
+
+# Utilities
+uuid         = { version = "1", features = ["v4", "serde"] }
+chrono       = { version = "0.4", features = ["serde"] }
+sha2         = { version = "0.10" }
+hex          = { version = "0.4" }
+thiserror    = { version = "1" }
+anyhow       = { version = "1" }
+tracing      = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Testing
+tempfile     = "3.10"
+
+# CLI
+clap         = { version = "4", features = ["derive"] }
+rustyline    = { version = "14" }
+
+# HTTP client
+reqwest      = { version = "0.12", features = ["json"], default-features = false }

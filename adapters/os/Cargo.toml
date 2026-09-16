@@ -1,0 +1,18 @@
+[package]
+name        = "mnse-os-adapter"
+description = "OS Adapter for Hyprland window, workspace, and clipboard state tracking"
+version     = "2.0.0"
+edition     = "2021"
+authors     = ["Muzamil <bmuzamil38@gmail.com>"]
+license     = "MIT"
+
+[dependencies]
+mnse-types = { path = "../../mnse-types" }
+mnse-sdk   = { path = "../../mnse-sdk" }
+
+tokio      = { version = "1", features = ["full"] }
+serde      = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+anyhow     = { version = "1" }
+tracing    = { version = "0.1" }
+tracing-subscriber = { version = "0.3" }
