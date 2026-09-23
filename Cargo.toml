@@ -8,6 +8,7 @@ members = [
     "mnse-sdk",
     "mnse-k",
     "adapters/os",
+    "adapters/shell",
 ]
 
 [workspace.package]

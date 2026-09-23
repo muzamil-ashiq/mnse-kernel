@@ -1076,6 +1076,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mnse-shell-adapter"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "dirs",
+ "mnse-sdk",
+ "mnse-types",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "mnse-types"
 version = "2.0.0"
 dependencies = [
