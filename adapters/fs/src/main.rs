@@ -9,7 +9,6 @@ use mnse_sdk::SocketClient;
 use mnse_types::{Event, EventType};
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
@@ -77,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
                                     last_emit_time = now;
 
                                     let lang = detect_language(ext);
-                                    let git_branch = get_git_branch(&watch_dir);
+                                    let git_branch = get_git_branch(&path);
 
                                     let ev = Event::new(
                                         EventType::FileSwitched {
@@ -162,31 +161,25 @@ fn detect_language(ext: &str) -> &'static str {
     }
 }
 
-/// Extract current git branch if workspace is inside a git repository
-fn get_git_branch(repo_dir: &Path) -> Option<String> {
-    // Try reading .git/HEAD first for instant zero-fork read
-    let head_path = repo_dir.join(".git/HEAD");
-    if head_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&head_path) {
-            let trimmed = content.trim();
-            if let Some(branch) = trimmed.strip_prefix("ref: refs/heads/") {
-                return Some(branch.to_string());
+/// Extract current git branch by searching upward for .git/HEAD
+fn get_git_branch(file_or_dir: &Path) -> Option<String> {
+    let mut curr = if file_or_dir.is_file() {
+        file_or_dir.parent()
+    } else {
+        Some(file_or_dir)
+    };
+
+    while let Some(dir) = curr {
+        let head_path = dir.join(".git/HEAD");
+        if head_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&head_path) {
+                let trimmed = content.trim();
+                if let Some(branch) = trimmed.strip_prefix("ref: refs/heads/") {
+                    return Some(branch.to_string());
+                }
             }
         }
-    }
-
-    // Fallback to git CLI
-    let output = Command::new("git")
-        .current_dir(repo_dir)
-        .args(["branch", "--show-current"])
-        .output()
-        .ok()?;
-
-    if output.status.success() {
-        let b = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !b.is_empty() {
-            return Some(b);
-        }
+        curr = dir.parent();
     }
 
     None
