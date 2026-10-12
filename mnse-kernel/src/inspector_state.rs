@@ -85,6 +85,19 @@ impl InspectorState {
                 snap.workspace = *workspace;
             }
 
+            EventType::WorkspaceChanged {
+                workspace_id,
+                workspace_count,
+                ..
+            } => {
+                if *workspace_id > 0 {
+                    snap.workspace = Some(*workspace_id);
+                }
+                if let Some(count) = workspace_count {
+                    snap.workspace_count = Some(*count);
+                }
+            }
+
             EventType::ProcessExecuted {
                 command,
                 exit_code,
@@ -121,6 +134,7 @@ impl InspectorState {
                         exit_code: *exit_code,
                         cwd: working_dir.clone(),
                         timestamp: event.timestamp,
+                        duration_ms: *duration_ms,
                     },
                 );
                 snap.recent_commands.truncate(10);

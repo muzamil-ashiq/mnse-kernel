@@ -29,7 +29,9 @@ pub enum KernelOp {
     },
     Care,
     Summary { range: String },
+    Adapter { action: String, name: Option<String> },
     Action(ActionPayload),
+    Help,
     Literal(serde_json::Value),
     Var(String),
     Pipeline(Vec<KernelOp>),
@@ -126,7 +128,12 @@ impl Planner {
             KStatement::Summary { range } => Ok(KernelOp::Summary {
                 range: range.clone(),
             }),
+            KStatement::Adapter { action, name } => Ok(KernelOp::Adapter {
+                action: action.clone(),
+                name: name.clone(),
+            }),
             KStatement::Action(payload) => Ok(KernelOp::Action(payload.clone())),
+            KStatement::Help => Ok(KernelOp::Help),
         }
     }
 
@@ -139,6 +146,7 @@ impl Planner {
                 op: op.clone(),
                 target: target.clone(),
             }),
+            KExpr::Help => Ok(KernelOp::Help),
             KExpr::Var(v) => Ok(KernelOp::Var(v.clone())),
             KExpr::Literal(val) => Ok(KernelOp::Literal(val.clone())),
             KExpr::Pipeline(stages) => {

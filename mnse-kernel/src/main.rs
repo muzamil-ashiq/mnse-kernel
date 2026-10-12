@@ -55,12 +55,21 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let registry = Arc::new(mnse_kernel::AdapterRegistry::load_default());
+    let gatekeeper = Arc::new(mnse_kernel::Gatekeeper::new(
+        registry.clone(),
+        redactor.clone(),
+        config.network.rate_limit_per_conn,
+    ));
+
     let state = AppState {
         inspector,
         bus,
         ledger: ledger.clone(),
         graph: graph.clone(),
         redactor,
+        registry,
+        gatekeeper,
     };
 
     // Spawn Unix Socket Server
@@ -69,6 +78,38 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         if let Err(e) = mnse_kernel::socket::start_socket_server(&sock_path, sock_state).await {
             tracing::error!("Unix Socket server error: {}", e);
+        }
+    });
+
+    // Spawn SlotBus Shared Memory Consumer (<500ns zero-copy intake)
+    let slotbus_state = state.clone();
+    tokio::spawn(async move {
+        match mnse_slotbus::SlotBusConsumer::new(
+            mnse_slotbus::DEFAULT_SHM_NAME,
+            mnse_slotbus::DEFAULT_CAPACITY,
+            mnse_slotbus::DEFAULT_SLOT_SIZE,
+        ) {
+            Ok(consumer) => {
+                tracing::info!("SlotBus shared memory active at {}", mnse_slotbus::DEFAULT_SHM_NAME);
+                loop {
+                    let mut drained = 0;
+                    while let Some(mut event) = consumer.poll_next_event() {
+                        drained += 1;
+                        if slotbus_state.gatekeeper.admit(&mut event) == mnse_kernel::Admission::Admitted {
+                            slotbus_state.inspector.process_event(&event);
+                            let _ = slotbus_state.ledger.store_event(&event);
+                            let _ = slotbus_state.bus.publish(event);
+                        }
+                        if drained >= 128 {
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+                }
+            }
+            Err(e) => {
+                tracing::warn!("SlotBus shm initialization skipped: {}", e);
+            }
         }
     });
 

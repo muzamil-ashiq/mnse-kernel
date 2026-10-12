@@ -27,6 +27,13 @@ impl Ledger {
         Ok(Self { db, path: path_buf })
     }
 
+    /// Open ledger in read-only mode (safe for concurrent inspection)
+    pub fn open_read_only<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path_buf = path.as_ref().to_path_buf();
+        let db = LedgerDb::open_read_only(&path)?;
+        Ok(Self { db, path: path_buf })
+    }
+
     /// Store a single event (returns Ok(false) if event was filtered out as noise)
     pub fn store_event(&self, event: &Event) -> Result<bool> {
         self.db.insert_event(event)

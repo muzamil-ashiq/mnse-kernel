@@ -56,21 +56,23 @@ impl LedgerDb {
             conn.pragma_update(None, "mmap_size", "268435456")?; // Memory-map up to 256MB
             
             let integrity: String = conn
-                .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+                .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))?;
             if integrity != "ok" {
-                return Err(anyhow::anyhow!("PRAGMA integrity_check failed: {}", integrity));
+                return Err(anyhow::anyhow!("PRAGMA quick_check failed: {}", integrity));
             }
             Ok(conn)
         }
 
         let conn = match try_open(path) {
-            Ok(conn) => {
-                tracing::info!("✅ ledger.db integrity check passed.");
-                conn
-            }
+            Ok(conn) => conn,
             Err(e) => {
-                tracing::error!("⚠️ ledger.db integrity check FAILED: {}. Performing auto-recovery...", e);
-                if path.exists() {
+                let err_str = e.to_string();
+                let is_corrupted = err_str.contains("malformed")
+                    || err_str.contains("file is not a database")
+                    || err_str.contains("quick_check failed");
+
+                if is_corrupted && path.exists() {
+                    tracing::error!("⚠️ ledger.db integrity check FAILED: {}. Performing auto-recovery...", e);
                     let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
                     let corrupt_path = path.with_extension(format!("db.corrupt.{}", timestamp));
                     tracing::warn!("Moving corrupt database {:?} to {:?}", path, corrupt_path);
@@ -84,18 +86,20 @@ impl LedgerDb {
                     if shm_path.exists() {
                         let _ = std::fs::rename(&shm_path, path.with_extension(format!("db-shm.corrupt.{}", timestamp)));
                     }
-                }
 
-                let conn = Connection::open(path)?;
-                conn.busy_timeout(std::time::Duration::from_millis(5000))?;
-                conn.pragma_update(None, "journal_mode", "WAL")?;
-                conn.pragma_update(None, "synchronous", "NORMAL")?;
-                conn.pragma_update(None, "foreign_keys", "ON")?;
-                conn.pragma_update(None, "cache_size", "-64000")?;
-                conn.pragma_update(None, "temp_store", "MEMORY")?;
-                conn.pragma_update(None, "mmap_size", "268435456")?;
-                tracing::info!("Initialized a fresh ledger.db after recovery.");
-                conn
+                    let conn = Connection::open(path)?;
+                    conn.busy_timeout(std::time::Duration::from_millis(5000))?;
+                    conn.pragma_update(None, "journal_mode", "WAL")?;
+                    conn.pragma_update(None, "synchronous", "NORMAL")?;
+                    conn.pragma_update(None, "foreign_keys", "ON")?;
+                    conn.pragma_update(None, "cache_size", "-64000")?;
+                    conn.pragma_update(None, "temp_store", "MEMORY")?;
+                    conn.pragma_update(None, "mmap_size", "268435456")?;
+                    tracing::info!("Initialized a fresh ledger.db after recovery.");
+                    conn
+                } else {
+                    return Err(e);
+                }
             }
         };
 
@@ -114,6 +118,25 @@ impl LedgerDb {
         };
         db.init_schema()?;
         Ok(db)
+    }
+
+    /// Open database in read-only mode (safe for concurrent CLI inspection)
+    pub fn open_read_only<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(std::time::Duration::from_millis(3000))?;
+        let read_conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        read_conn.busy_timeout(std::time::Duration::from_millis(3000))?;
+        Ok(Self {
+            write_conn: Mutex::new(conn),
+            read_conn: Mutex::new(read_conn),
+        })
     }
 
     /// Initialize SQLite schema, FTS5 virtual table, and indices

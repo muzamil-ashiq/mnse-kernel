@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 mnse-types  = { path = "../mnse-types" }
 mnse-ledger = { path = "../mnse-ledger" }
+mnse-graph  = { path = "../mnse-graph" }
 mnse-sdk    = { path = "../mnse-sdk" }
 
 tokio      = { workspace = true }

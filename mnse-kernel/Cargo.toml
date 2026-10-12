@@ -8,9 +8,10 @@ license.workspace    = true
 repository.workspace = true
 
 [dependencies]
-mnse-types  = { path = "../mnse-types" }
-mnse-ledger = { path = "../mnse-ledger" }
-mnse-graph  = { path = "../mnse-graph" }
+mnse-types   = { path = "../mnse-types" }
+mnse-ledger  = { path = "../mnse-ledger" }
+mnse-graph   = { path = "../mnse-graph" }
+mnse-slotbus = { path = "../mnse-slotbus" }
 
 tokio        = { workspace = true }
 tokio-stream = { workspace = true }

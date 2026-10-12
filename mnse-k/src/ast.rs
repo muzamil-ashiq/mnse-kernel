@@ -47,8 +47,17 @@ pub enum KStatement {
         range: String,
     },
 
+    /// Adapter management (`k adapter on os`, `k adapter list`, `k adapter off shell`)
+    Adapter {
+        action: String,
+        name: Option<String>,
+    },
+
     /// Action dispatch (`speak "hello"`, `look "up"`)
     Action(ActionPayload),
+
+    /// Help command (`k help`)
+    Help,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -73,6 +82,9 @@ pub enum KExpr {
         op: String,
         target: String,
     },
+
+    /// Help reference
+    Help,
 
     /// Variable reference ($it, $x)
     Var(String),

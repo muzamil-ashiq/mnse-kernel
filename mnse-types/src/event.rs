@@ -158,6 +158,8 @@ pub enum EventType {
         workspace_id: u32,
         workspace_name: Option<String>,
         previous_workspace: Option<u32>,
+        #[serde(default)]
+        workspace_count: Option<u32>,
     },
 
     /// Clipboard content changed

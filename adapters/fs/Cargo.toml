@@ -1,0 +1,18 @@
+[package]
+name = "mnse-fs-adapter"
+version = "2.0.0"
+edition = "2021"
+
+[dependencies]
+mnse-types = { path = "../../mnse-types" }
+mnse-sdk   = { path = "../../mnse-sdk" }
+tokio      = { workspace = true, features = ["full"] }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+chrono     = { workspace = true }
+anyhow     = { workspace = true }
+clap       = { workspace = true }
+notify     = { workspace = true }
+tracing    = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs       = "5.0"

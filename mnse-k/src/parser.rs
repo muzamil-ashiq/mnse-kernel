@@ -43,9 +43,43 @@ impl Parser {
                 self.advance();
                 Ok(KStatement::Care)
             }
+            Token::Ident(ref s) if s == "help" => {
+                self.advance();
+                Ok(KStatement::Help)
+            }
+            Token::KwAdapter => {
+                self.advance();
+                let action = match self.peek() {
+                    Token::KwOn => { self.advance(); "on".to_string() }
+                    Token::KwOff => { self.advance(); "off".to_string() }
+                    Token::KwEnable => { self.advance(); "enable".to_string() }
+                    Token::KwDisable => { self.advance(); "disable".to_string() }
+                    Token::KwList => { self.advance(); "list".to_string() }
+                    Token::Ident(s) => {
+                        let a = s.clone();
+                        self.advance();
+                        a
+                    }
+                    _ => "list".to_string(),
+                };
+
+                let name = if let Token::Ident(s) = self.peek() {
+                    let n = s.clone();
+                    self.advance();
+                    Some(n)
+                } else {
+                    None
+                };
+
+                Ok(KStatement::Adapter { action, name })
+            }
             Token::KwSummary => {
                 self.advance();
                 let range = if let Token::Ident(s) = self.peek() {
+                    let r = s.clone();
+                    self.advance();
+                    r
+                } else if let Token::Str(s) = self.peek() {
                     let r = s.clone();
                     self.advance();
                     r
@@ -281,6 +315,10 @@ impl Parser {
                     let r = i.clone();
                     self.advance();
                     r
+                } else if let Token::Str(s) = self.peek() {
+                    let r = s.clone();
+                    self.advance();
+                    r
                 } else {
                     "today".to_string()
                 };
@@ -333,8 +371,37 @@ impl Parser {
                     Ok(KExpr::Recent(s[7..].to_string()))
                 } else if s.starts_with("history.") {
                     Ok(KExpr::History(s[8..].to_string()))
+                } else if s == "state" || s == "snapshot" {
+                    Ok(KExpr::Current("state".to_string()))
+                } else if s == "app" {
+                    Ok(KExpr::Current("app".to_string()))
+                } else if s == "errors" {
+                    Ok(KExpr::Recent("errors".to_string()))
+                } else if s == "commands" {
+                    Ok(KExpr::Recent("commands".to_string()))
+                } else if s == "files" {
+                    // Check if next token is a range (e.g. 'today', 'yesterday')
+                    if let Token::Ident(range) = self.peek() {
+                        if range == "today" || range == "yesterday" || range.starts_with("202") {
+                            let r = range.clone();
+                            self.advance();
+                            return Ok(KExpr::History(r));
+                        }
+                    }
+                    Ok(KExpr::Recent("files".to_string()))
+                } else if s == "help" {
+                    Ok(KExpr::Help)
+                } else if s == "true" {
+                    Ok(KExpr::Literal(serde_json::Value::Bool(true)))
+                } else if s == "false" {
+                    Ok(KExpr::Literal(serde_json::Value::Bool(false)))
+                } else if s == "null" {
+                    Ok(KExpr::Literal(serde_json::Value::Null))
                 } else {
-                    Ok(KExpr::Literal(serde_json::Value::String(s)))
+                    anyhow::bail!(
+                        "Unknown query or command: '{}'. Valid queries: current.state, recent.errors, recent.files, recent.commands, history today, summary today, adapter list, care, help.",
+                        s
+                    )
                 }
             }
 
@@ -415,5 +482,66 @@ mod tests {
             prog.statements[0],
             KStatement::Expr(KExpr::Current("app".into()))
         );
+    }
+
+    #[test]
+    fn test_parse_adapter_statements() {
+        let mut lexer = Lexer::new("adapter on os; adapter off shell; adapter list");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let prog = parser.parse_program().unwrap();
+
+        assert_eq!(
+            prog.statements[0],
+            KStatement::Adapter {
+                action: "on".into(),
+                name: Some("os".into()),
+            }
+        );
+        assert_eq!(
+            prog.statements[1],
+            KStatement::Adapter {
+                action: "off".into(),
+                name: Some("shell".into()),
+            }
+        );
+        assert_eq!(
+            prog.statements[2],
+            KStatement::Adapter {
+                action: "list".into(),
+                name: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_unknown_query_fails_fast() {
+        let mut lexer = Lexer::new("metrics");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let res = parser.parse_program();
+        assert!(res.is_err(), "k metrics must return an error");
+        assert!(res.unwrap_err().to_string().contains("Unknown query or command: 'metrics'"));
+    }
+
+    #[test]
+    fn test_parse_help_and_summary_and_history() {
+        let mut lexer = Lexer::new("help");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let prog = parser.parse_program().unwrap();
+        assert_eq!(prog.statements[0], KStatement::Help);
+
+        let mut lexer2 = Lexer::new("summary today");
+        let tokens2 = lexer2.tokenize().unwrap();
+        let mut parser2 = Parser::new(tokens2);
+        let prog2 = parser2.parse_program().unwrap();
+        assert_eq!(prog2.statements[0], KStatement::Summary { range: "today".into() });
+
+        let mut lexer3 = Lexer::new("history today");
+        let tokens3 = lexer3.tokenize().unwrap();
+        let mut parser3 = Parser::new(tokens3);
+        let prog3 = parser3.parse_program().unwrap();
+        assert_eq!(prog3.statements[0], KStatement::Expr(KExpr::History("today".into())));
     }
 }

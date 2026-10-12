@@ -5,12 +5,11 @@
 //! items active in STM (5-minute sliding window) are linked via `IN_STM_DURING`.
 
 use crate::db::GraphDb;
+use crate::ml::{HawkesDecayModel, TemporalDecayModel};
 use mnse_types::{Event, EventType};
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-
-const STM_WINDOW_SECONDS: i64 = 300; // 5 minutes sliding window
 
 #[derive(Debug, Clone)]
 struct STMItem {
@@ -23,6 +22,7 @@ struct STMItem {
 pub struct GraphBuilder {
     db: Arc<GraphDb>,
     stm: Arc<Mutex<VecDeque<STMItem>>>,
+    decay_model: Arc<dyn TemporalDecayModel>,
 }
 
 impl GraphBuilder {
@@ -30,12 +30,19 @@ impl GraphBuilder {
         Self {
             db,
             stm: Arc::new(Mutex::new(VecDeque::new())),
+            decay_model: Arc::new(HawkesDecayModel::default()),
         }
+    }
+
+    pub fn with_decay_model(mut self, decay_model: Arc<dyn TemporalDecayModel>) -> Self {
+        self.decay_model = decay_model;
+        self
     }
 
     /// Process incoming event for graph construction & STM tracking
     pub async fn process_event(&self, event: &Event) {
         let event_ts = event.timestamp.timestamp();
+        self.decay_model.record_event(event_ts);
         self.prune_stm(event_ts);
 
         match &event.event_type {
@@ -261,7 +268,7 @@ impl GraphBuilder {
     fn prune_stm(&self, current_ts: i64) {
         if let Ok(mut stm) = self.stm.lock() {
             while let Some(front) = stm.front() {
-                if current_ts - front.timestamp > STM_WINDOW_SECONDS {
+                if !self.decay_model.should_retain(front.timestamp, current_ts) {
                     stm.pop_front();
                 } else {
                     break;

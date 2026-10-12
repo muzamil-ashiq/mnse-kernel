@@ -10,12 +10,14 @@ use tokio::time::sleep;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
-    tracing::info!("🪟 Starting MNSE OS Adapter (Hyprland)...");
+    tracing::info!("Starting MNSE OS Adapter (Hyprland)...");
 
     let client = SocketClient::default_local();
     let mut last_window_id = String::new();
+    let mut last_workspace_count: u32 = 0;
 
     loop {
+        // ── Active window ──────────────────────────────────────────────────
         if let Ok(output) = Command::new("hyprctl").arg("activewindow").arg("-j").output() {
             if output.status.success() {
                 if let Ok(val) = serde_json::from_slice::<Value>(&output.stdout) {
@@ -39,9 +41,35 @@ async fn main() -> anyhow::Result<()> {
                         );
 
                         if let Err(e) = client.emit(&event).await {
-                            tracing::debug!("Failed to emit WindowFocused event to socket: {}", e);
+                            tracing::debug!("Failed to emit WindowFocused: {}", e);
                         } else {
-                            tracing::info!("Emitted WindowFocused: {}", window_title);
+                            tracing::info!("WindowFocused: {}", window_title);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Workspace count ────────────────────────────────────────────────
+        if let Ok(output) = Command::new("hyprctl").arg("workspaces").arg("-j").output() {
+            if output.status.success() {
+                if let Ok(arr) = serde_json::from_slice::<Value>(&output.stdout) {
+                    let count = arr.as_array().map(|a| a.len() as u32).unwrap_or(0);
+                    if count != last_workspace_count && count > 0 {
+                        last_workspace_count = count;
+                        let event = Event::new(
+                            EventType::WorkspaceChanged {
+                                workspace_id: 0,    // 0 = metadata-only update
+                                workspace_name: None,
+                                previous_workspace: None,
+                                workspace_count: Some(count),
+                            },
+                            "hyprland",
+                        );
+                        if let Err(e) = client.emit(&event).await {
+                            tracing::debug!("Failed to emit WorkspaceChanged: {}", e);
+                        } else {
+                            tracing::info!("WorkspaceChanged: {} workspaces", count);
                         }
                     }
                 }

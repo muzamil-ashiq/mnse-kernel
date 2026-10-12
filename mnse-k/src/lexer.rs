@@ -27,6 +27,12 @@ pub enum Token {
     KwSelect,
     KwCare,
     KwSummary,
+    KwAdapter,
+    KwOn,
+    KwOff,
+    KwEnable,
+    KwDisable,
+    KwList,
 
     // Identifiers & Variables
     Ident(String),
@@ -178,15 +184,16 @@ impl<'a> Lexer<'a> {
             return Err(anyhow::anyhow!("Unterminated string literal"));
         }
 
-        // Number literal: 123, 45.6
+        // Number literal: 123, 45.6 or Date literal: 2026-10-06
         if ch.is_ascii_digit() {
             let start = self.pos;
             let mut has_dot = false;
+            let mut has_dash = false;
             while self.pos < self.input.len() {
                 let c = self.input[self.pos..].chars().next().unwrap();
                 if c.is_ascii_digit() {
                     self.pos += 1;
-                } else if c == '.' && !has_dot {
+                } else if c == '.' && !has_dot && !has_dash {
                     // Check if next char is digit (so it's float, not field access .field)
                     let next_char = self.input[self.pos + 1..].chars().next();
                     if next_char.map_or(false, |n| n.is_ascii_digit()) {
@@ -195,13 +202,26 @@ impl<'a> Lexer<'a> {
                     } else {
                         break;
                     }
+                } else if c == '-' {
+                    // Date literal like 2026-10-06
+                    let next_char = self.input[self.pos + 1..].chars().next();
+                    if next_char.map_or(false, |n| n.is_ascii_digit()) {
+                        has_dash = true;
+                        self.pos += 1;
+                    } else {
+                        break;
+                    }
                 } else {
                     break;
                 }
             }
-            let num_str = &self.input[start..self.pos];
-            let num: f64 = num_str.parse()?;
-            return Ok(Token::Num(num));
+            let raw_str = &self.input[start..self.pos];
+            if has_dash {
+                return Ok(Token::Ident(raw_str.to_string()));
+            } else {
+                let num: f64 = raw_str.parse()?;
+                return Ok(Token::Num(num));
+            }
         }
 
         // Identifiers & Keywords
@@ -238,6 +258,12 @@ impl<'a> Lexer<'a> {
                 "select" => Token::KwSelect,
                 "care" => Token::KwCare,
                 "summary" => Token::KwSummary,
+                "adapter" | "adapters" => Token::KwAdapter,
+                "on" => Token::KwOn,
+                "off" => Token::KwOff,
+                "enable" => Token::KwEnable,
+                "disable" => Token::KwDisable,
+                "list" => Token::KwList,
                 _ => Token::Ident(word.to_string()),
             });
         }

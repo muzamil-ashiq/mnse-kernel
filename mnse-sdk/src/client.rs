@@ -1,7 +1,7 @@
 //! Client implementation for HTTP & Unix domain socket kernel communication.
 
 use anyhow::Result;
-use mnse_types::{ContextSnapshot, Event};
+use mnse_types::{ContextSnapshot, DailyStats, Event};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -59,6 +59,51 @@ impl HttpClient {
         let url = format!("{}/emit", self.base_url);
         self.client.post(&url).json(event).send().await?;
         Ok(())
+    }
+
+    /// Query all registered adapters with live telemetry
+    pub async fn get_adapters(&self) -> Result<Vec<serde_json::Value>> {
+        let url = format!("{}/adapters", self.base_url);
+        let resp = self.client.get(&url).send().await?.json::<Vec<serde_json::Value>>().await?;
+        Ok(resp)
+    }
+
+    /// Enable an adapter (turn ON)
+    pub async fn enable_adapter(&self, name: &str) -> Result<()> {
+        let url = format!("{}/adapters/{}/enable", self.base_url, name);
+        self.client.post(&url).send().await?;
+        Ok(())
+    }
+
+    /// Disable an adapter (turn OFF)
+    pub async fn disable_adapter(&self, name: &str) -> Result<()> {
+        let url = format!("{}/adapters/{}/disable", self.base_url, name);
+        self.client.post(&url).send().await?;
+        Ok(())
+    }
+
+    /// Query ledger event history
+    pub async fn get_ledger_events(
+        &self,
+        date: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Vec<Event>> {
+        let mut url = format!("{}/ledger/events?", self.base_url);
+        if let Some(d) = date {
+            url.push_str(&format!("date={}&", d));
+        }
+        if let Some(l) = limit {
+            url.push_str(&format!("limit={}&", l));
+        }
+        let resp = self.client.get(&url).send().await?.json::<Vec<Event>>().await?;
+        Ok(resp)
+    }
+
+    /// Query ledger daily activity statistics
+    pub async fn get_daily_stats(&self, date: &str) -> Result<DailyStats> {
+        let url = format!("{}/ledger/stats?date={}", self.base_url, date);
+        let resp = self.client.get(&url).send().await?.json::<DailyStats>().await?;
+        Ok(resp)
     }
 }
 
@@ -131,6 +176,40 @@ impl SocketClient {
 
         let resp = serde_json::from_str::<SocketResponsePayload>(&line)?;
         Ok(resp)
+    }
+}
+
+/// Ultra-fast nanosecond-latency Shared Memory Client via SlotBus
+pub struct SlotBusClient {
+    producer: std::sync::Mutex<Option<mnse_slotbus::SlotBusProducer>>,
+    shm_name: String,
+}
+
+impl SlotBusClient {
+    pub fn default_local() -> Self {
+        Self::new(mnse_slotbus::DEFAULT_SHM_NAME)
+    }
+
+    pub fn new(shm_name: &str) -> Self {
+        let producer = mnse_slotbus::SlotBusProducer::open(shm_name).ok();
+        Self {
+            producer: std::sync::Mutex::new(producer),
+            shm_name: shm_name.to_string(),
+        }
+    }
+
+    /// Emits an event to kernel via shared memory ring buffer in <500 nanoseconds
+    pub fn emit(&self, event: &Event) -> Result<()> {
+        let mut guard = self.producer.lock().unwrap();
+        if guard.is_none() {
+            *guard = mnse_slotbus::SlotBusProducer::open(&self.shm_name).ok();
+        }
+
+        if let Some(ref p) = *guard {
+            p.send_event(event).map_err(|e| anyhow::anyhow!("{}", e))
+        } else {
+            Err(anyhow::anyhow!("SlotBus producer offline (shm: {})", self.shm_name))
+        }
     }
 }
 

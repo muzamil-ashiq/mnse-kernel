@@ -101,10 +101,10 @@ async fn main() -> Result<()> {
                 let _ = buffer.flush(&client, 50).await;
             }
 
-            // If command failed (exit != 0), emit derived ErrorDetected event
+            // If command failed (exit != 0), emit derived ErrorDetected event linked causally
             if exit != 0 {
                 let pattern = classify_error(&cmd, exit);
-                let err_event = Event::new(
+                let mut err_event = Event::new(
                     EventType::ErrorDetected {
                         command: cmd,
                         exit_code: exit,
@@ -113,6 +113,7 @@ async fn main() -> Result<()> {
                     },
                     "shell",
                 );
+                err_event.parent_event_id = Some(exec_event.id);
                 let _ = client.emit(&err_event).await;
             }
         }
@@ -180,15 +181,13 @@ fn cap_string(s: &str, max_len: usize) -> String {
 }
 
 fn classify_error(cmd: &str, exit_code: i32) -> Option<String> {
-    if cmd.starts_with("cargo ") {
-        Some("RustCompile".into())
-    } else if cmd.starts_with("git ") {
-        Some("GitConflict".into())
-    } else if exit_code == 127 {
-        Some("NotFound".into())
+    if exit_code == 127 {
+        Some("DependencyMissing".into())
     } else if exit_code == 126 {
         Some("PermissionDenied".into())
+    } else if cmd.starts_with("cargo ") {
+        Some("RustCompile".into())
     } else {
-        Some(format!("ExitCode{}", exit_code))
+        None // Let Kernel Gatekeeper Cellular ML classifier perform statistical feature classification
     }
 }

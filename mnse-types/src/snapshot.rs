@@ -46,6 +46,7 @@ pub struct ContextSnapshot {
     pub window_class: Option<String>,
     pub window_id: Option<String>,
     pub workspace: Option<u32>,
+    pub workspace_count: Option<u32>,   // total workspaces known from hyprland
     pub is_idle: bool,
     pub idle_seconds: Option<u64>,
 
@@ -120,6 +121,7 @@ pub struct RecentCommand {
     pub exit_code: i32,
     pub cwd: String,
     pub timestamp: DateTime<Utc>,
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +144,7 @@ impl ContextSnapshot {
             window_class: None,
             window_id: None,
             workspace: None,
+            workspace_count: None,
             is_idle: false,
             idle_seconds: None,
             clipboard_hash: None,
@@ -240,72 +243,204 @@ impl ContextSnapshot {
     }
 
     /// Render snapshot into Rich TOON format for CLI & Human display
+    /// Render snapshot into Lean Diagnostic TOON format (Option 3 with Traceable IDs)
     pub fn to_toon_rich(&self) -> String {
+        let home_str = dirs::home_dir()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        let compress = |s: &str| -> String {
+            if !home_str.is_empty() { s.replace(&home_str, "~") } else { s.to_string() }
+        };
+
+        // Helper to produce a deterministic 6-character hex hash from a string (ADR 005)
+        let short_id = |prefix: &str, s: &str| -> String {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(s.as_bytes());
+            let res = hasher.finalize();
+            format!("{}:{:02x}{:02x}{:02x}", prefix, res[0], res[1], res[2])
+        };
+
         let mut out = String::new();
-        out.push_str("📍 Live Context Snapshot [mnse-v2.0]\n");
-        out.push_str("──────────────────────────────────────────────────\n");
-        out.push_str(&format!("  Timestamp:  {}\n", self.timestamp.format("%H:%M:%S UTC")));
 
-        if let Some(app) = &self.active_app {
-            out.push_str(&format!("  Active App: {}\n", app));
-        }
-        if let Some(title) = &self.window_title {
-            out.push_str(&format!("  Window:     {}\n", title));
-        }
-        if let Some(ws) = self.workspace {
-            out.push_str(&format!("  Workspace:  {}\n", ws));
-        }
-        if let Some(file) = &self.editor_file {
-            let home_str = dirs::home_dir().map(|h| h.to_string_lossy().to_string()).unwrap_or_default();
-            let compressed = if !home_str.is_empty() { file.replace(&home_str, "~") } else { file.clone() };
-            out.push_str(&format!("  Open File:  {}\n", compressed));
-        }
-        if let Some(lang) = &self.editor_language {
-            out.push_str(&format!("  Language:   {}\n", lang));
-        }
-        if let Some(cwd) = &self.cwd {
-            let home_str = dirs::home_dir().map(|h| h.to_string_lossy().to_string()).unwrap_or_default();
-            let compressed = if !home_str.is_empty() { cwd.replace(&home_str, "~") } else { cwd.clone() };
-            out.push_str(&format!("  CWD:        {}\n", compressed));
-        }
-        if let Some(branch) = &self.git_branch {
-            out.push_str(&format!("  Git Branch: {}\n", branch));
-        }
+        // ── Header ─────────────────────────────────────────────────────────
+        let idle_tag = if self.is_idle {
+            format!(" [idle: {}s]", self.idle_seconds.unwrap_or(0))
+        } else {
+            String::new()
+        };
 
-        if !self.adapters.is_empty() {
-            out.push_str("\n🔌 Active Adapters:\n");
-            for a in &self.adapters {
-                let status_str = if a.connected { "online" } else { "offline" };
-                out.push_str(&format!("   • {:<15} [{}] ({} events)\n", a.name, status_str, a.event_count));
+        out.push_str(&format!(
+            "[mnse v2.0] {}{}\n",
+            self.timestamp.format("%Y-%m-%d %H:%M:%S UTC"),
+            idle_tag
+        ));
+
+        // ── Focus ──────────────────────────────────────────────────────────
+        let has_focus = self.active_app.is_some()
+            || self.window_title.is_some()
+            || self.workspace.is_some()
+            || self.cwd.is_some()
+            || self.git_branch.is_some()
+            || self.editor_file.is_some();
+
+        if has_focus {
+            out.push_str("\nfocus:\n");
+            if let Some(app) = &self.active_app {
+                let win_id = self.window_id.as_deref().unwrap_or("0x0");
+                let ws_str = match (self.workspace, self.workspace_count) {
+                    (Some(ws), Some(tot)) => format!(", ws: {}/{}", ws, tot),
+                    (Some(ws), None) => format!(", ws: {}", ws),
+                    _ => String::new(),
+                };
+                out.push_str(&format!("  app: {} [win:{}{}]\n", app, win_id, ws_str));
+            }
+            if let Some(title) = &self.window_title {
+                let short = if title.chars().count() > 64 {
+                    format!("{}...", &title[..title.char_indices().nth(64).map(|(i,_)| i).unwrap_or(title.len())])
+                } else {
+                    title.clone()
+                };
+                out.push_str(&format!("  win: {}\n", short));
+            }
+            if let Some(cwd) = &self.cwd {
+                let git_tag = self.git_branch.as_deref()
+                    .map(|b| {
+                        let repo_str = self.git_repo.as_deref().map(|r| format!(" ({})", r)).unwrap_or_default();
+                        format!(" (git: {}{})", b, repo_str)
+                    })
+                    .unwrap_or_default();
+                out.push_str(&format!("  dir: {}{}\n", compress(cwd), git_tag));
+            }
+            if let Some(file) = &self.editor_file {
+                let lang_tag = self.editor_language.as_deref()
+                    .map(|l| format!(" [{}]", l))
+                    .unwrap_or_default();
+                let line_tag = self.editor_line
+                    .map(|l| format!(":L{}", l))
+                    .unwrap_or_default();
+                out.push_str(&format!("  file: {}{}{}\n", compress(file), line_tag, lang_tag));
+            }
+            if let Some(err_count) = self.editor_diagnostics_errors {
+                if err_count > 0 {
+                    let warn_count = self.editor_diagnostics_warnings.unwrap_or(0);
+                    out.push_str(&format!("  diag: {} errors, {} warnings\n", err_count, warn_count));
+                }
             }
         }
 
+        // ── Browser ────────────────────────────────────────────────────────
+        if let Some(domain) = &self.browser_domain {
+            out.push_str("\nbrowser:\n");
+            let q_str = self.browser_search_query.as_deref()
+                .map(|q| format!(" (query: \"{}\")", q))
+                .unwrap_or_default();
+            out.push_str(&format!("  url: {}{}\n", domain, q_str));
+            if let Some(tab) = &self.browser_title {
+                let short = if tab.len() > 60 { &tab[..60] } else { tab };
+                out.push_str(&format!("  tab: {}\n", short));
+            }
+        }
+
+        // ── Commands ───────────────────────────────────────────────────────
         if !self.recent_commands.is_empty() {
-            out.push_str("\n🖥️ Recent Commands:\n");
+            out.push_str("\ncommands:\n");
             for cmd in self.recent_commands.iter().take(5) {
-                out.push_str(&format!("   • {} (exit: {})\n", cmd.command, cmd.exit_code));
+                let mark = if cmd.exit_code == 0 { "." } else { "x" };
+                let dur = if cmd.duration_ms > 0 {
+                    format!(", dur: {:.1}s", cmd.duration_ms as f64 / 1000.0)
+                } else {
+                    String::new()
+                };
+                let cid = short_id("cmd", &cmd.command);
+                let short_cmd = if cmd.command.len() > 50 {
+                    format!("{}...", &cmd.command[..50])
+                } else {
+                    cmd.command.clone()
+                };
+                out.push_str(&format!(
+                    "  {} [{}] {} (exit: {}{})\n",
+                    mark, cid, short_cmd, cmd.exit_code, dur
+                ));
             }
         }
 
+        // ── Errors ─────────────────────────────────────────────────────────
         if !self.recent_errors.is_empty() {
-            out.push_str("\n❌ Recent Errors:\n");
-            for err in self.recent_errors.iter().take(5) {
-                out.push_str(&format!("   • {} (exit: {})\n", err.command, err.exit_code));
+            out.push_str("\nerrors:\n");
+            for err in self.recent_errors.iter().take(3) {
+                let eid = short_id("err", &err.command);
+                let pattern_tag = err.pattern.as_deref()
+                    .map(|p| format!(" [{}, exit: {}]", p, err.exit_code))
+                    .unwrap_or_else(|| format!(" [exit: {}]", err.exit_code));
+                let short_cmd = if err.command.len() > 48 {
+                    format!("{}...", &err.command[..48])
+                } else {
+                    err.command.clone()
+                };
+                out.push_str(&format!("  [{}] {}{}\n", eid, short_cmd, pattern_tag));
             }
         }
 
+        // ── Recent Files ───────────────────────────────────────────────────
         if !self.recent_files.is_empty() {
-            let home_str = dirs::home_dir().map(|h| h.to_string_lossy().to_string()).unwrap_or_default();
-            let compressed_files: Vec<String> = self.recent_files
-                .iter()
-                .take(5)
-                .map(|f| if !home_str.is_empty() { f.replace(&home_str, "~") } else { f.clone() })
-                .collect();
-            out.push_str(&format!("\n📝 Recent Files:\n   • {}\n", compressed_files.join("\n   • ")));
+            out.push_str("\nrecent files:\n");
+            for f in self.recent_files.iter().take(3) {
+                out.push_str(&format!("  {}\n", compress(f)));
+            }
+        }
+
+        // ── Telemetry & Adapters ───────────────────────────────────────────
+        let has_telemetry = !self.adapters.is_empty()
+            || self.cpu_percent.is_some()
+            || self.memory_used_mb.is_some()
+            || self.daily_stats.events_total > 0;
+
+        if has_telemetry {
+            out.push_str("\ntelemetry:\n");
+
+            if !self.adapters.is_empty() {
+                let adapter_strs: Vec<String> = self.adapters.iter().map(|a| {
+                    let ts = a.last_seen
+                        .map(|t| t.format("%H:%M").to_string())
+                        .unwrap_or_else(|| "--:--".into());
+                    let state = if a.connected { "" } else { " (off)" };
+                    format!("{}:{}{}({})", a.name, a.event_count, state, ts)
+                }).collect();
+                out.push_str(&format!("  adapters: {}\n", adapter_strs.join(", ")));
+            }
+
+            let mut sys_parts = Vec::new();
+            if let Some(cpu) = self.cpu_percent {
+                sys_parts.push(format!("cpu {:.1}%", cpu));
+            }
+            if let (Some(used), Some(total)) = (self.memory_used_mb, self.memory_total_mb) {
+                let pct = (used as f64 / total as f64) * 100.0;
+                let used_gb = used as f64 / 1024.0;
+                let total_gb = total as f64 / 1024.0;
+                sys_parts.push(format!("ram {:.1}/{:.1}GB ({:.0}%)", used_gb, total_gb, pct));
+            }
+            if let Some(bat) = self.battery_percent {
+                sys_parts.push(format!("bat {:.0}%", bat));
+            }
+            if !sys_parts.is_empty() {
+                out.push_str(&format!("  system:   {}\n", sys_parts.join(", ")));
+            }
+
+            let s = &self.daily_stats;
+            if s.events_total > 0 {
+                out.push_str(&format!(
+                    "  today:    {} ev / {} cmd / {} err / {} files\n",
+                    s.events_total, s.commands_run, s.errors_count, s.files_touched
+                ));
+            }
         }
 
         out
     }
+
+
 }
 
 #[cfg(test)]
@@ -348,12 +483,25 @@ mod tests {
     }
 
     #[test]
-    fn toon_omits_empty_fields() {
-        let snap = ContextSnapshot::empty();
-        let toon = snap.to_toon();
-        // Only timestamp should be present
-        assert!(toon.starts_with("ts:"));
-        assert!(!toon.contains("app:"));
-        assert!(!toon.contains("file:"));
+    fn toon_rich_option3_format_and_ids() {
+        let mut snap = ContextSnapshot::empty();
+        snap.active_app = Some("kitty".into());
+        snap.window_id = Some("0x1a2b".into());
+        snap.workspace = Some(1);
+        snap.workspace_count = Some(4);
+        snap.cwd = Some("/home/mab/Applications/my-project".into());
+        snap.recent_commands.push(RecentCommand {
+            command: "cargo test --workspace".into(),
+            exit_code: 0,
+            cwd: "/home/mab/Applications/my-project".into(),
+            timestamp: Utc::now(),
+            duration_ms: 12400,
+        });
+
+        let rich = snap.to_toon_rich();
+        assert!(rich.contains("app: kitty [win:0x1a2b, ws: 1/4]"), "expected format, got: {}", rich);
+        assert!(rich.contains(". [cmd:"), "expected command with id, got: {}", rich);
+        assert!(!rich.contains("─"), "must not contain line characters: {}", rich);
+        assert!(!rich.contains("📍"), "must not contain emoji: {}", rich);
     }
 }

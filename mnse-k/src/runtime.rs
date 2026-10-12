@@ -5,7 +5,8 @@
 
 use crate::planner::{BehaviorTriggerOp, KernelOp};
 use anyhow::Result;
-use mnse_ledger::EventFilter;
+use mnse_graph::{CausalDiffusion, GraphDb, PageRankDiffusion};
+use mnse_ledger::{EventFilter, Ledger};
 use mnse_sdk::{HttpClient, SocketClient};
 use mnse_types::ContextSnapshot;
 use serde::{Deserialize, Serialize};
@@ -105,19 +106,104 @@ impl Runtime {
                     _ => range.clone(),
                 };
 
-                let _filter = EventFilter::new().with_search(&date_str);
-                // Fallback to empty list if kernel offline
-                Ok(serde_json::json!({
-                    "history": date_str,
-                    "status": "queried"
-                }))
+                let events = match self.http_client.get_ledger_events(Some(&date_str), Some(50)).await {
+                    Ok(evs) => evs,
+                    Err(_) => {
+                        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+                        let ledger_path = home.join(".mnse/ledger.db");
+                        if ledger_path.exists() {
+                            match Ledger::open_read_only(&ledger_path) {
+                                Ok(ledger) => {
+                                    let filter = EventFilter::new().with_date(&date_str).with_limit(50);
+                                    ledger.query(filter).unwrap_or_default()
+                                }
+                                Err(_) => Vec::new(),
+                            }
+                        } else {
+                            Vec::new()
+                        }
+                    }
+                };
+
+                Ok(serde_json::to_value(events)?)
             }
 
-            KernelOp::QueryCausal { op, target } => Ok(serde_json::json!({
-                "causal_op": op,
-                "target": target,
-                "result": format!("Linked context for {}", target)
-            })),
+            KernelOp::QueryCausal { op, target } => {
+                let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+                let graph_path = home.join(".mnse/graph.db");
+
+                if !graph_path.exists() {
+                    return Ok(serde_json::json!({
+                        "causal_op": op,
+                        "target": target,
+                        "attributions": [],
+                        "status": "Graph database not yet initialized"
+                    }));
+                }
+
+                let db = match GraphDb::new(&graph_path) {
+                    Ok(db) => db,
+                    Err(e) => {
+                        return Ok(serde_json::json!({
+                            "causal_op": op,
+                            "target": target,
+                            "error": format!("Failed to open graph database: {}", e)
+                        }));
+                    }
+                };
+
+                let start_node_opt = if target.starts_with("latest.error") || target == "error" {
+                    db.get_latest_node_by_type("Error").unwrap_or(None)
+                } else if target.starts_with("latest.cmd") || target == "command" {
+                    db.get_latest_node_by_type("Command").unwrap_or(None)
+                } else if target.starts_with("latest.file") || target == "file" {
+                    db.get_latest_node_by_type("File").unwrap_or(None)
+                } else if let Ok(Some(n)) = db.get_node(target) {
+                    Some(n)
+                } else {
+                    db.search_nodes(target).ok().and_then(|v| v.into_iter().next())
+                };
+
+                let start_node = match start_node_opt {
+                    Some(n) => n,
+                    None => {
+                        return Ok(serde_json::json!({
+                            "causal_op": op,
+                            "target": target,
+                            "attributions": [],
+                            "explanation": format!("No active knowledge graph nodes found matching target '{}'", target)
+                        }));
+                    }
+                };
+
+                let seed_id = start_node.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let seed_type = start_node.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let seed_label = start_node.get("label").and_then(|v| v.as_str()).unwrap_or("");
+
+                let model = PageRankDiffusion::default();
+                let attributions = match model.diffuse(&db, seed_id, 5) {
+                    Ok(attrs) => attrs,
+                    Err(e) => {
+                        return Ok(serde_json::json!({
+                            "causal_op": op,
+                            "target": target,
+                            "seed_id": seed_id,
+                            "error": format!("Diffusion calculation failed: {}", e)
+                        }));
+                    }
+                };
+
+                Ok(serde_json::json!({
+                    "causal_op": op,
+                    "target": target,
+                    "seed": {
+                        "id": seed_id,
+                        "type": seed_type,
+                        "label": seed_label,
+                    },
+                    "attributions": attributions
+                }))
+            }
 
             KernelOp::Let { name, val } => {
                 let evaled = Box::pin(self.eval_op(val, ctx)).await?;
@@ -191,14 +277,76 @@ impl Runtime {
             }
 
             KernelOp::Summary { range } => {
-                let snap = self.get_snapshot().await?;
+                let date_str = match range.as_str() {
+                    "today" => chrono::Utc::now().format("%Y-%m-%d").to_string(),
+                    "yesterday" => (chrono::Utc::now() - chrono::Duration::days(1))
+                        .format("%Y-%m-%d")
+                        .to_string(),
+                    _ => range.clone(),
+                };
+
+                let stats = match self.http_client.get_daily_stats(&date_str).await {
+                    Ok(s) => s,
+                    Err(_) => {
+                        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+                        let ledger_path = home.join(".mnse/ledger.db");
+                        if ledger_path.exists() {
+                            match Ledger::open_read_only(&ledger_path) {
+                                Ok(ledger) => ledger.daily_stats(&date_str).unwrap_or_default(),
+                                Err(_) => mnse_types::DailyStats::default(),
+                            }
+                        } else {
+                            mnse_types::DailyStats::default()
+                        }
+                    }
+                };
+
                 Ok(serde_json::json!({
                     "summary_range": range,
-                    "date": snap.daily_stats.date,
-                    "events_total": snap.daily_stats.events_total,
-                    "commands_run": snap.daily_stats.commands_run,
-                    "errors_count": snap.daily_stats.errors_count
+                    "date": stats.date,
+                    "events_total": stats.events_total,
+                    "commands_run": stats.commands_run,
+                    "files_touched": stats.files_touched,
+                    "errors_count": stats.errors_count,
+                    "focused_apps": stats.focused_apps
                 }))
+            }
+
+            KernelOp::Help => {
+                let help_text = "\
+K Language v2.0 (MNSE Kernel) - Command Reference
+
+Present State Queries:
+  current.state (or 'state')       Live developer context (app, window, cwd, editor, diag)
+  current.app   (or 'app')         Active window / application name
+  current.file                     Current active file in editor
+  current.toon                     Compact single-line TOON state representation
+  current.json                     Full machine JSON snapshot
+
+Recent Activity Queries:
+  recent.errors   (or 'errors')    Recent compiler and runtime errors
+  recent.commands (or 'commands')  Recent shell commands executed
+  recent.files    (or 'files')     Recent files switched or edited
+
+Historical Ledger Queries:
+  history today                    Ledger events from today
+  history yesterday                Ledger events from yesterday
+  history YYYY-MM-DD               Ledger events from a specific date
+  summary today                    Activity statistics for today
+  summary YYYY-MM-DD               Activity statistics for a specific date
+
+Causal Reasoning:
+  cause of error                   Attribution graph search for latest error
+  cause of <target>                Graph diffusion search for target entity
+  related <query>                  Cosine and graph similarity search
+
+Adapter & System Management:
+  adapter list                     List adapter connection, status & telemetry
+  adapter on <name>                Enable adapter (os, hyprland, fs, shell, browser)
+  adapter off <name>               Disable adapter
+  care                             Kernel daemon health and privacy status
+  help                             Display this help reference\n";
+                Ok(serde_json::Value::String(help_text.to_string()))
             }
 
             KernelOp::Action(action) => {
@@ -209,6 +357,59 @@ impl Runtime {
                 let _ = self.http_client.emit(&event).await;
                 Ok(serde_json::json!({ "action": "dispatched" }))
             }
+
+            KernelOp::Adapter { action, name } => match action.as_str() {
+                "list" | "status" => {
+                    match self.http_client.get_adapters().await {
+                        Ok(list) => {
+                            let mut out = String::new();
+                            out.push_str("ADAPTERS\n");
+                            for item in list {
+                                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                let enabled = item.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                                let connected = item.get("connected").and_then(|v| v.as_bool()).unwrap_or(false);
+                                let count = item.get("event_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                                let last = item.get("last_seen").and_then(|v| v.as_str()).unwrap_or("--:--");
+                                let short_last = if last.len() >= 16 { &last[11..16] } else { "--:--" };
+
+                                let state_tag = if enabled {
+                                    if connected { "online  [enabled ]" } else { "offline [enabled ]" }
+                                } else {
+                                    "muted   [disabled]"
+                                };
+
+                                out.push_str(&format!(
+                                    "  {:<10}  {:<18}  {:>5} events   last seen {}\n",
+                                    name, state_tag, count, short_last
+                                ));
+                            }
+                            Ok(serde_json::Value::String(out))
+                        }
+                        Err(e) => Ok(serde_json::json!({ "error": format!("Kernel offline or unreachable: {}", e) })),
+                    }
+                }
+                "on" | "enable" => {
+                    if let Some(n) = name {
+                        match self.http_client.enable_adapter(n).await {
+                            Ok(_) => Ok(serde_json::Value::String(format!("Adapter '{}' is now ENABLED (ON)", n))),
+                            Err(e) => Ok(serde_json::Value::String(format!("Failed to enable adapter '{}': {}", n, e))),
+                        }
+                    } else {
+                        Ok(serde_json::Value::String("Error: specify adapter name to enable (e.g. 'k adapter on os')".to_string()))
+                    }
+                }
+                "off" | "disable" => {
+                    if let Some(n) = name {
+                        match self.http_client.disable_adapter(n).await {
+                            Ok(_) => Ok(serde_json::Value::String(format!("Adapter '{}' is now DISABLED (OFF)", n))),
+                            Err(e) => Ok(serde_json::Value::String(format!("Failed to disable adapter '{}': {}", n, e))),
+                        }
+                    } else {
+                        Ok(serde_json::Value::String("Error: specify adapter name to disable (e.g. 'k adapter off os')".to_string()))
+                    }
+                }
+                _ => Ok(serde_json::Value::String(format!("Unknown adapter action: {}", action))),
+            },
 
             _ => Ok(serde_json::Value::Null),
         }

@@ -183,6 +183,40 @@ impl GraphDb {
         }
     }
 
+    /// Get the most recently updated node of a specific type (e.g. "Error", "Command")
+    pub fn get_latest_node_by_type(&self, node_type: &str) -> Result<Option<serde_json::Value>> {
+        let conn = self.acquire_lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, type, label, properties, created_at, updated_at \
+             FROM nodes WHERE type = ?1 ORDER BY updated_at DESC LIMIT 1",
+        )?;
+
+        let mut rows = stmt.query([node_type])?;
+        if let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let type_name: String = row.get(1)?;
+            let label: String = row.get(2)?;
+            let props_str: Option<String> = row.get(3)?;
+            let created_at: i64 = row.get(4)?;
+            let updated_at: i64 = row.get(5)?;
+
+            let properties = props_str
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+
+            Ok(Some(serde_json::json!({
+                "id": id,
+                "type": type_name,
+                "label": label,
+                "properties": properties,
+                "created_at": created_at,
+                "updated_at": updated_at
+            })))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Get outgoing related nodes for a node
     pub fn get_related(&self, id: &str, relation: Option<&str>) -> Result<Vec<serde_json::Value>> {
         let conn = self.acquire_lock()?;

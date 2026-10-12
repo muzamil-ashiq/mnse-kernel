@@ -8,7 +8,7 @@
 use crate::http_server::AppState;
 use mnse_types::Event;
 use serde::{Deserialize, Serialize};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -19,6 +19,7 @@ pub enum SocketCommand {
     Ping,
     Snapshot { format: Option<String> },
     Emit { event: Event },
+    Adapter { action: String, name: Option<String> },
 }
 
 #[derive(Debug, Serialize)]
@@ -44,6 +45,15 @@ pub async fn start_socket_server(socket_path: &str, state: AppState) -> anyhow::
     loop {
         match listener.accept().await {
             Ok((stream, _addr)) => {
+                #[cfg(target_os = "linux")]
+                if let Ok(cred) = stream.peer_cred() {
+                    let expected_uid = std::fs::metadata(path).map(|m| m.uid()).unwrap_or(cred.uid());
+                    if cred.uid() != expected_uid {
+                        tracing::warn!("Rejected unauthorized socket connection from UID {}", cred.uid());
+                        continue;
+                    }
+                }
+
                 let state_clone = state.clone();
                 tokio::spawn(async move {
                     let (reader, mut writer) = stream.into_split();
@@ -92,7 +102,92 @@ async fn handle_socket_line(line: &str, state: &AppState) -> SocketResponse {
                 }
             }
             SocketCommand::Emit { mut event } => {
-                state.redactor.redact_event(&mut event);
+                match state.gatekeeper.admit(&mut event) {
+                    crate::gatekeeper::Admission::Admitted => {
+                        state.inspector.process_event(&event);
+                        let _ = state.ledger.store_event(&event);
+                        let _ = state.bus.publish(event);
+                        SocketResponse {
+                            status: "accepted".to_string(),
+                            data: None,
+                        }
+                    }
+                    crate::gatekeeper::Admission::Dropped(reason) => SocketResponse {
+                        status: "dropped".to_string(),
+                        data: Some(serde_json::Value::String(reason)),
+                    },
+                }
+            }
+            SocketCommand::Adapter { action, name } => match action.as_str() {
+                "list" => {
+                    let registered = state.registry.list();
+                    let snap = state.inspector.snapshot();
+                    let health_map: std::collections::HashMap<String, mnse_types::AdapterStatus> = snap
+                        .adapters
+                        .into_iter()
+                        .map(|a| (a.name.clone(), a))
+                        .collect();
+
+                    let list: Vec<serde_json::Value> = registered
+                        .into_iter()
+                        .map(|entry| {
+                            let live = health_map.get(&entry.name);
+                            let connected = live.map(|l| l.connected).unwrap_or(false);
+                            let event_count = live.map(|l| l.event_count).unwrap_or(0);
+                            let last_seen = live.and_then(|l| l.last_seen);
+                            serde_json::json!({
+                                "name": entry.name,
+                                "enabled": entry.enabled,
+                                "connected": connected,
+                                "event_count": event_count,
+                                "last_seen": last_seen,
+                                "description": entry.description,
+                            })
+                        })
+                        .collect();
+                    SocketResponse {
+                        status: "ok".to_string(),
+                        data: Some(serde_json::Value::Array(list)),
+                    }
+                }
+                "enable" | "on" => {
+                    if let Some(n) = name {
+                        let _ = state.registry.set_enabled(&n, true);
+                        SocketResponse {
+                            status: "ok".to_string(),
+                            data: Some(serde_json::json!({ "adapter": n, "enabled": true })),
+                        }
+                    } else {
+                        SocketResponse {
+                            status: "error".to_string(),
+                            data: Some(serde_json::Value::String("Missing adapter name".into())),
+                        }
+                    }
+                }
+                "disable" | "off" => {
+                    if let Some(n) = name {
+                        let _ = state.registry.set_enabled(&n, false);
+                        SocketResponse {
+                            status: "ok".to_string(),
+                            data: Some(serde_json::json!({ "adapter": n, "enabled": false })),
+                        }
+                    } else {
+                        SocketResponse {
+                            status: "error".to_string(),
+                            data: Some(serde_json::Value::String("Missing adapter name".into())),
+                        }
+                    }
+                }
+                _ => SocketResponse {
+                    status: "error".to_string(),
+                    data: Some(serde_json::Value::String(format!("Unknown action: {}", action))),
+                },
+            },
+        }
+    } else if let Ok(mut event) = serde_json::from_str::<Event>(line) {
+        // Direct event ingestion fallback via Gatekeeper
+        match state.gatekeeper.admit(&mut event) {
+            crate::gatekeeper::Admission::Admitted => {
                 state.inspector.process_event(&event);
                 let _ = state.ledger.store_event(&event);
                 let _ = state.bus.publish(event);
@@ -101,16 +196,10 @@ async fn handle_socket_line(line: &str, state: &AppState) -> SocketResponse {
                     data: None,
                 }
             }
-        }
-    } else if let Ok(mut event) = serde_json::from_str::<Event>(line) {
-        // Direct event ingestion fallback
-        state.redactor.redact_event(&mut event);
-        state.inspector.process_event(&event);
-        let _ = state.ledger.store_event(&event);
-        let _ = state.bus.publish(event);
-        SocketResponse {
-            status: "accepted".to_string(),
-            data: None,
+            crate::gatekeeper::Admission::Dropped(reason) => SocketResponse {
+                status: "dropped".to_string(),
+                data: Some(serde_json::Value::String(reason)),
+            },
         }
     } else {
         SocketResponse {

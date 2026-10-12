@@ -1,0 +1,21 @@
+[package]
+name        = "mnse-slotbus"
+description = "Lockless shared memory circular ring buffer IPC for high-throughput zero-copy sensory intake"
+version.workspace    = true
+edition.workspace    = true
+authors.workspace    = true
+license.workspace    = true
+repository.workspace = true
+
+[dependencies]
+mnse-types = { path = "../mnse-types" }
+libc       = "0.2"
+serde      = { workspace = true }
+serde_json = { workspace = true }
+anyhow     = { workspace = true }
+thiserror  = { workspace = true }
+tracing    = { workspace = true }
+chrono     = { workspace = true }
+
+[dev-dependencies]
+tempfile   = { workspace = true }
