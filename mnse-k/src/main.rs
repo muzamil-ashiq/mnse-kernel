@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Interactive REPL Shell Mode
-    println!("⚡ K Language Shell v2.0.0 (MNSE Kernel)");
+    println!("K Language Shell v2.0.0 (MNSE Kernel)");
     println!("Type 'help', 'care', 'current.state', or 'exit' to quit.\n");
 
     let mut rl = DefaultEditor::new()?;
