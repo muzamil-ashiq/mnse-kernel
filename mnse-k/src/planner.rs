@@ -37,6 +37,11 @@ pub enum KernelOp {
     Pipeline(Vec<KernelOp>),
     Where(Box<KernelOp>),
     Select(Vec<String>),
+    Binary {
+        op: String,
+        left: Box<KernelOp>,
+        right: Box<KernelOp>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -158,10 +163,11 @@ impl Planner {
             }
             KExpr::Where(pred) => Ok(KernelOp::Where(Box::new(Self::plan_expr(pred)?))),
             KExpr::Select(fields) => Ok(KernelOp::Select(fields.clone())),
-            KExpr::Binary { op: _, left: _, right: _ } => {
-                // Return literal for now
-                Ok(KernelOp::Literal(serde_json::Value::Bool(true)))
-            }
+            KExpr::Binary { op, left, right } => Ok(KernelOp::Binary {
+                op: op.clone(),
+                left: Box::new(Self::plan_expr(left)?),
+                right: Box::new(Self::plan_expr(right)?),
+            }),
         }
     }
 }

@@ -20,8 +20,13 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     if !cli.code.is_empty() {
-        // One-shot evaluation
-        let input = cli.code.join(" ");
+        // One-shot evaluation or file execution
+        let first = &cli.code[0];
+        let input = if cli.code.len() == 1 && (first.ends_with(".k") || std::path::Path::new(first).is_file()) {
+            std::fs::read_to_string(first)?
+        } else {
+            cli.code.join(" ")
+        };
         match execute(&input).await {
             Ok(result) => {
                 if let serde_json::Value::String(s) = &result {

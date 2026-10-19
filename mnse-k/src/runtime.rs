@@ -212,8 +212,17 @@ impl Runtime {
             }
 
             KernelOp::Var(name) => {
-                if let Some(val) = ctx.bindings.get(name) {
-                    Ok(val.clone())
+                let parts: Vec<&str> = name.split('.').collect();
+                if let Some(mut val) = ctx.bindings.get(parts[0]).cloned() {
+                    for part in &parts[1..] {
+                        val = match val {
+                            serde_json::Value::Object(map) => {
+                                map.get(*part).cloned().unwrap_or(serde_json::Value::Null)
+                            }
+                            _ => serde_json::Value::Null,
+                        };
+                    }
+                    Ok(val)
                 } else {
                     Ok(serde_json::Value::Null)
                 }
@@ -237,7 +246,7 @@ impl Runtime {
                     for item in items {
                         ctx.bindings.insert("it".to_string(), item.clone());
                         let res = Box::pin(self.eval_op(pred, ctx)).await?;
-                        if res.as_bool().unwrap_or(true) {
+                        if res.as_bool().unwrap_or(false) {
                             filtered.push(item);
                         }
                     }
@@ -249,17 +258,89 @@ impl Runtime {
 
             KernelOp::Select(fields) => {
                 let it = ctx.bindings.get("it").cloned().unwrap_or(serde_json::Value::Null);
-                if let serde_json::Value::Object(map) = it {
-                    let mut proj = serde_json::Map::new();
-                    for f in fields {
-                        if let Some(v) = map.get(f) {
-                            proj.insert(f.clone(), v.clone());
+                match it {
+                    serde_json::Value::Object(map) => {
+                        let mut proj = serde_json::Map::new();
+                        for f in fields {
+                            if let Some(v) = map.get(f) {
+                                proj.insert(f.clone(), v.clone());
+                            }
                         }
+                        Ok(serde_json::Value::Object(proj))
                     }
-                    Ok(serde_json::Value::Object(proj))
-                } else {
-                    Ok(it)
+                    serde_json::Value::Array(items) => {
+                        let mut projected_items = Vec::new();
+                        for item in items {
+                            if let serde_json::Value::Object(map) = item {
+                                let mut proj = serde_json::Map::new();
+                                for f in fields {
+                                    if let Some(v) = map.get(f) {
+                                        proj.insert(f.clone(), v.clone());
+                                    }
+                                }
+                                projected_items.push(serde_json::Value::Object(proj));
+                            } else {
+                                projected_items.push(item);
+                            }
+                        }
+                        Ok(serde_json::Value::Array(projected_items))
+                    }
+                    _ => Ok(it),
                 }
+            }
+
+            KernelOp::Binary { op, left, right } => {
+                let l = Box::pin(self.eval_op(left, ctx)).await?;
+                let r = Box::pin(self.eval_op(right, ctx)).await?;
+
+                let res = match op.as_str() {
+                    "==" | "EqEq" => match (&l, &r) {
+                        (serde_json::Value::Number(a), serde_json::Value::Number(b)) => {
+                            if let (Some(fa), Some(fb)) = (a.as_f64(), b.as_f64()) {
+                                (fa - fb).abs() < f64::EPSILON
+                            } else {
+                                l == r
+                            }
+                        }
+                        _ => l == r,
+                    },
+                    "!=" | "Neq" => match (&l, &r) {
+                        (serde_json::Value::Number(a), serde_json::Value::Number(b)) => {
+                            if let (Some(fa), Some(fb)) = (a.as_f64(), b.as_f64()) {
+                                (fa - fb).abs() >= f64::EPSILON
+                            } else {
+                                l != r
+                            }
+                        }
+                        _ => l != r,
+                    },
+                    ">" | "Gt" => match (&l, &r) {
+                        (serde_json::Value::Number(a), serde_json::Value::Number(b)) => {
+                            a.as_f64().unwrap_or(0.0) > b.as_f64().unwrap_or(0.0)
+                        }
+                        _ => false,
+                    },
+                    "<" | "Lt" => match (&l, &r) {
+                        (serde_json::Value::Number(a), serde_json::Value::Number(b)) => {
+                            a.as_f64().unwrap_or(0.0) < b.as_f64().unwrap_or(0.0)
+                        }
+                        _ => false,
+                    },
+                    ">=" | "Gte" => match (&l, &r) {
+                        (serde_json::Value::Number(a), serde_json::Value::Number(b)) => {
+                            a.as_f64().unwrap_or(0.0) >= b.as_f64().unwrap_or(0.0)
+                        }
+                        _ => false,
+                    },
+                    "<=" | "Lte" => match (&l, &r) {
+                        (serde_json::Value::Number(a), serde_json::Value::Number(b)) => {
+                            a.as_f64().unwrap_or(0.0) <= b.as_f64().unwrap_or(0.0)
+                        }
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                Ok(serde_json::Value::Bool(res))
             }
 
             KernelOp::Behavior { name, triggers } => {

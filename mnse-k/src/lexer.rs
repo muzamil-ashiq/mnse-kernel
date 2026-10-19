@@ -158,7 +158,7 @@ impl<'a> Lexer<'a> {
             let start = self.pos;
             while self.pos < self.input.len() {
                 let c = self.input[self.pos..].chars().next().unwrap();
-                if c.is_alphanumeric() || c == '_' {
+                if c.is_alphanumeric() || c == '_' || c == '.' {
                     self.pos += c.len_utf8();
                 } else {
                     break;
