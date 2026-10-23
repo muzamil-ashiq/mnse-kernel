@@ -28,7 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   - Offline JSONL buffering for fault tolerance during kernel restarts.
   - Auto-installed Fish integration via `~/.config/fish/conf.d/mnse.fish`.
 - **Hyprland Wayland Compositor Sensor (`adapters/os`):**
-  - Live window focus, title, class, and workspace tracking via Hyprland IPC socket.
+  - Live window focus, title, class, and workspace tracking via 500ms `hyprctl` polling.
 - **K Language Engine v2.0 (`mnse-k`):**
   - Direct execution of `.k` script files (`k script.k`).
   - Object dot traversal on pipeline variables (`$it.exit_code`, `$it.command`).
