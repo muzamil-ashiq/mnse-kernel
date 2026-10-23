@@ -14,8 +14,8 @@ MNSE v2.0 is partitioned into 10 modular, zero-warning Rust crates:
 | :--- | :--- | :--- |
 | `mnse-types` | `mnse-types/` | Canonical event schemas, `ContextSnapshot`, Toon diagnostic serializers, and trace IDs (`[cmd:hash]`, `[err:hash]`). |
 | `mnse-slotbus` | `mnse-slotbus/` | Lockless fixed-size ring buffer implementation in POSIX shared memory (`/dev/shm/mnse_slotbus`). |
-| `mnse-ledger` | `mnse-ledger/` | SQLite event store (`~/.mnse/kernel.db`) with append-only persistence, FTS search, and time-range filtering. |
-| `mnse-graph` | `mnse-graph/` | Operational knowledge graph (`~/.mnse/mnse_graph.db`) with Hawkes process self-excitation and PageRank diffusion. |
+| `mnse-ledger` | `mnse-ledger/` | SQLite event store (`~/.mnse/ledger.db`) with append-only persistence, FTS search, and time-range filtering. |
+| `mnse-graph` | `mnse-graph/` | Operational knowledge graph (`~/.mnse/graph.db`) with Hawkes process self-excitation and PageRank diffusion. |
 | `mnse-kernel` | `mnse-kernel/` | Core daemon: Axum HTTP (`127.0.0.1:7780`), UNIX socket (`~/.mnse/kernel.sock`), Gatekeeper admission, Kalman burst filtering, and Rhai policy engine. |
 | `mnse-sdk` | `mnse-sdk/` | Client SDK providing synchronous and asynchronous IPC connection bindings to the kernel. |
 | `mnse-k` | `mnse-k/` | K Language compiler, interpreter, AST planner, pipeline engine, `.k` file runner, and interactive REPL. |
@@ -54,7 +54,7 @@ MNSE v2.0 is partitioned into 10 modular, zero-warning Rust crates:
                  v                                       v
     +------------------------+              +------------------------+
     | SQLite Ledger          |              | SQLite Knowledge Graph |
-    | (~/.mnse/kernel.db)    |              | (~/.mnse/mnse_graph.db)|
+    | (~/.mnse/ledger.db)    |              | (~/.mnse/graph.db)     |
     +------------------------+              +------------------------+
                  ^                                       ^
                  +-------------------+-------------------+
