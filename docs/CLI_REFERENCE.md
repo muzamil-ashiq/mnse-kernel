@@ -111,8 +111,10 @@ k> exit
 
 ---
 
-## 6. Global Dispatcher Behavior
+## 6. Binary Installation
 
-The launcher script at `~/.local/bin/k` provides intelligent context-aware dispatching:
-1. **Robotics & GRaCEmo Verbs:** If the command is run inside `gracemo-vira` or specifies a robotics verb (`forward`, `backward`, `spin`, `stop`, `arm`, `goto`, `speak`, `scan`, `hud`, `view`, `graph`, `verify`, `reset`, `center`, `reflex`, `explore`, `patrol`, `memory`), execution delegates to GRaCEmo.
-2. **Kernel Operations:** Everywhere else, execution routes to the native release binary at `/home/mab/Applications/my-project/target/release/k`.
+`k` is compiled directly from `mnse-k/src/main.rs` and installed to `~/.local/bin/k`:
+```bash
+cargo build --release -p mnse-k
+cp target/release/k ~/.local/bin/k
+```

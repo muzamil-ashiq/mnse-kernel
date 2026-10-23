@@ -38,8 +38,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - **Systemd User Automation:**
   - Automated user units under `~/.config/systemd/user/`: `mnse-kernel.service`, `mnse-os-adapter.service`, `mnse-fs-adapter.service`.
   - Unified user target `mnse.target` enabling seamless autostart on system login and unified lifecycle control (`systemctl --user restart mnse.target`).
-- **Context-Aware Global Dispatcher (`~/.local/bin/k`):**
-  - Transparent dual dispatching: routes robotics verbs (`forward`, `spin`, `arm`, etc.) or commands inside `gracemo-vira` to the GRaCEmo engine, while routing all operational queries to the high-performance `mnse-k` binary globally.
+- **Native CLI Binary (`k`):**
+  - Standalone release binary installed at `~/.local/bin/k` providing high-performance query execution and interactive REPL mode.
 
 ### Changed
 - Complete workspace restructuring into 10 modular, zero-warning crates.

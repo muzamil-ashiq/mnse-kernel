@@ -56,6 +56,7 @@ When rebuilding release binaries:
 cargo build --release --workspace
 
 # Install to user binary path
+cp target/release/k ~/.local/bin/
 cp target/release/mnse-kernel ~/.local/bin/
 cp target/release/mnse-os-adapter ~/.local/bin/
 cp target/release/mnse-fs-adapter ~/.local/bin/
@@ -64,5 +65,3 @@ cp target/release/mnse-shell-adapter ~/.local/bin/
 # Restart running daemons
 systemctl --user restart mnse.target
 ```
-
-*Note: The CLI launcher at `~/.local/bin/k` points directly to `/home/mab/Applications/my-project/target/release/k`, so rebuilding the workspace immediately updates the active `k` binary.*
