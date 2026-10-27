@@ -178,18 +178,6 @@ impl InspectorState {
                 }
             }
 
-            EventType::UrlChanged {
-                url,
-                title,
-                domain,
-                search_query,
-            } => {
-                snap.browser_url = Some(url.clone());
-                snap.browser_title = title.clone();
-                snap.browser_domain = Some(domain.clone());
-                snap.browser_search_query = search_query.clone();
-            }
-
             EventType::ClipboardChanged {
                 content_hash,
                 content_preview,
@@ -197,20 +185,6 @@ impl InspectorState {
             } => {
                 snap.clipboard_hash = Some(content_hash.clone());
                 snap.clipboard_preview = content_preview.clone();
-            }
-
-            EventType::PersonVisible { identity, confidence } => {
-                snap.person_visible = Some(identity.clone());
-                snap.person_confidence = Some(*confidence);
-            }
-
-            EventType::PersonGone { .. } => {
-                snap.person_visible = None;
-                snap.person_confidence = None;
-            }
-
-            EventType::TranscriptionResult { text, .. } => {
-                snap.last_transcription = Some(text.clone());
             }
 
             EventType::ResourcesUpdated {

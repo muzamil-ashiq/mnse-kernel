@@ -72,20 +72,6 @@ pub struct ContextSnapshot {
     pub git_branch: Option<String>,
     pub git_repo: Option<String>,
 
-    // ── Browser Context (from Browser Adapter) ───────────────────────────
-    pub browser_url: Option<String>,         // [REDACTED] if privacy_mode
-    pub browser_title: Option<String>,       // [REDACTED] if privacy_mode
-    pub browser_domain: Option<String>,      // always shown
-    pub browser_search_query: Option<String>,// [REDACTED] if privacy_mode
-
-    // ── Vision Context (from Vision Adapter) ─────────────────────────────
-    pub person_visible: Option<String>,      // "mab", "stranger", or None
-    pub person_confidence: Option<f32>,
-
-    // ── Audio Context (from Audio Adapter) ───────────────────────────────
-    pub last_transcription: Option<String>,  // last Whisper result
-    pub voice_active: bool,
-
     // ── System (from System Adapter) ─────────────────────────────────────
     pub cpu_percent: Option<f32>,
     pub memory_used_mb: Option<u64>,
@@ -163,14 +149,6 @@ impl ContextSnapshot {
             editor_diagnostics_warnings: None,
             git_branch: None,
             git_repo: None,
-            browser_url: None,
-            browser_title: None,
-            browser_domain: None,
-            browser_search_query: None,
-            person_visible: None,
-            person_confidence: None,
-            last_transcription: None,
-            voice_active: false,
             cpu_percent: None,
             memory_used_mb: None,
             memory_total_mb: None,
@@ -216,12 +194,6 @@ impl ContextSnapshot {
         }
         if let Some(pat) = &self.error_pattern {
             parts.push(format!("err:{}", pat));
-        }
-        if let Some(domain) = &self.browser_domain {
-            parts.push(format!("web:{}", domain));
-        }
-        if let Some(person) = &self.person_visible {
-            parts.push(format!("person:{}", person));
         }
         if let Some(cwd) = &self.cwd {
             let basename = std::path::Path::new(cwd)
@@ -327,19 +299,6 @@ impl ContextSnapshot {
                     let warn_count = self.editor_diagnostics_warnings.unwrap_or(0);
                     out.push_str(&format!("  diag: {} errors, {} warnings\n", err_count, warn_count));
                 }
-            }
-        }
-
-        // ── Browser ────────────────────────────────────────────────────────
-        if let Some(domain) = &self.browser_domain {
-            out.push_str("\nbrowser:\n");
-            let q_str = self.browser_search_query.as_deref()
-                .map(|q| format!(" (query: \"{}\")", q))
-                .unwrap_or_default();
-            out.push_str(&format!("  url: {}{}\n", domain, q_str));
-            if let Some(tab) = &self.browser_title {
-                let short = if tab.len() > 60 { &tab[..60] } else { tab };
-                out.push_str(&format!("  tab: {}\n", short));
             }
         }
 

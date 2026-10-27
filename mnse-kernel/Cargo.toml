@@ -1,6 +1,6 @@
 [package]
 name        = "mnse-kernel"
-description = "MNSE Kernel Daemon — EventBus, InspectorState, Rhai Policy Engine, HTTP server, Unix IPC"
+description = "MNSE Kernel Daemon — EventBus, InspectorState, Policy Gatekeeper, HTTP server, Unix IPC"
 version.workspace    = true
 edition.workspace    = true
 authors.workspace    = true
@@ -22,7 +22,6 @@ tower-http   = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 toml         = { workspace = true }
-rhai         = { workspace = true }
 
 uuid         = { workspace = true }
 chrono       = { workspace = true }

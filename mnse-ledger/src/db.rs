@@ -186,22 +186,22 @@ impl LedgerDb {
 
             -- FTS5 Sync Triggers (Indexes text-heavy events only to avoid write amplification)
             CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events
-            WHEN new.event_type_name IN ('ProcessExecuted', 'UrlChanged', 'FileSwitched', 'ErrorDetected', 'WindowFocused', 'DirectoryChanged', 'DiagnosticsUpdated', 'TranscriptionResult', 'Custom')
+            WHEN new.event_type_name IN ('ProcessExecuted', 'FileSwitched', 'ErrorDetected', 'WindowFocused', 'DirectoryChanged', 'DiagnosticsUpdated', 'Custom')
             BEGIN
                 INSERT INTO events_fts(rowid, source, event_type_name, event_type, payload)
                 VALUES (new.rowid, new.source, new.event_type_name, new.event_type, new.payload);
             END;
 
             CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events
-            WHEN old.event_type_name IN ('ProcessExecuted', 'UrlChanged', 'FileSwitched', 'ErrorDetected', 'WindowFocused', 'DirectoryChanged', 'DiagnosticsUpdated', 'TranscriptionResult', 'Custom')
+            WHEN old.event_type_name IN ('ProcessExecuted', 'FileSwitched', 'ErrorDetected', 'WindowFocused', 'DirectoryChanged', 'DiagnosticsUpdated', 'Custom')
             BEGIN
                 INSERT INTO events_fts(events_fts, rowid, source, event_type_name, event_type, payload)
                 VALUES ('delete', old.rowid, old.source, old.event_type_name, old.event_type, old.payload);
             END;
 
             CREATE TRIGGER IF NOT EXISTS events_au AFTER UPDATE ON events
-            WHEN new.event_type_name IN ('ProcessExecuted', 'UrlChanged', 'FileSwitched', 'ErrorDetected', 'WindowFocused', 'DirectoryChanged', 'DiagnosticsUpdated', 'TranscriptionResult', 'Custom')
-                 OR old.event_type_name IN ('ProcessExecuted', 'UrlChanged', 'FileSwitched', 'ErrorDetected', 'WindowFocused', 'DirectoryChanged', 'DiagnosticsUpdated', 'TranscriptionResult', 'Custom')
+            WHEN new.event_type_name IN ('ProcessExecuted', 'FileSwitched', 'ErrorDetected', 'WindowFocused', 'DirectoryChanged', 'DiagnosticsUpdated', 'Custom')
+                 OR old.event_type_name IN ('ProcessExecuted', 'FileSwitched', 'ErrorDetected', 'WindowFocused', 'DirectoryChanged', 'DiagnosticsUpdated', 'Custom')
             BEGIN
                 INSERT INTO events_fts(events_fts, rowid, source, event_type_name, event_type, payload)
                 VALUES ('delete', old.rowid, old.source, old.event_type_name, old.event_type, old.payload);
@@ -518,6 +518,24 @@ impl LedgerDb {
         Ok(events)
     }
 
+    /// Query events recorded on or before a given epoch timestamp (chronological order)
+    pub fn query_events_before(&self, timestamp: i64, limit: usize) -> Result<Vec<Event>> {
+        let conn = self.acquire_lock()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, timestamp, source, event_type_name, event_type, \
+                    observed_by, parent_event_id, payload \
+             FROM events WHERE timestamp <= ?1 ORDER BY timestamp DESC LIMIT ?2",
+        )?;
+
+        let mut events: Vec<Event> = stmt
+            .query_map(rusqlite::params![timestamp, limit], |row| self.row_to_event(row))?
+            .filter_map(|e| e.ok())
+            .collect();
+
+        events.reverse(); // Chronological order
+        Ok(events)
+    }
+
     /// Query latest snapshot before timestamp
     pub fn query_latest_snapshot_before(&self, timestamp: i64) -> Result<Option<ContextSnapshot>> {
         let conn = self.acquire_lock()?;
@@ -685,10 +703,23 @@ impl LedgerDb {
     fn archive_events_before(&self, conn: &Connection, cutoff_ts: i64, bg_only: bool) -> Result<u64> {
         use std::io::Write;
 
-        let archive_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".mnse/archive");
-        std::fs::create_dir_all(&archive_dir)?;
+        let mut archive_dir = std::env::var("MNSE_ARCHIVE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(".mnse/archive")
+            });
+
+        if let Err(e) = std::fs::create_dir_all(&archive_dir) {
+            // If home dir is read-only (e.g. sandboxed test runner or container), fallback to temp directory
+            let fallback = std::env::temp_dir().join("mnse/archive");
+            if std::fs::create_dir_all(&fallback).is_ok() {
+                archive_dir = fallback;
+            } else {
+                return Err(e.into());
+            }
+        }
 
         let month_str = DateTime::from_timestamp(cutoff_ts, 0)
             .map(|dt| dt.format("%Y-%m").to_string())

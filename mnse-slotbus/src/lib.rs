@@ -18,7 +18,7 @@ pub const DEFAULT_SHM_NAME: &str = "/mnse_slotbus";
 pub const DEFAULT_CAPACITY: u32 = 512;
 pub const DEFAULT_SLOT_SIZE: u32 = 4096;
 const SLOTBUS_MAGIC: u32 = 0x534C4F54; // 'SLOT'
-const SLOTBUS_VERSION: u32 = 1;
+const SLOTBUS_VERSION: u32 = 2;
 
 #[derive(Debug, Error)]
 pub enum SlotBusError {
@@ -44,6 +44,13 @@ struct SlotBusHeader {
     tail: AtomicUsize,
     flags: AtomicU32,
     _reserved: [u8; 32],
+}
+
+#[repr(C)]
+struct SlotHeader {
+    sequence: AtomicUsize,
+    len: u32,
+    _reserved: u32,
 }
 
 /// Shared memory consumer used by MNSE Kernel Daemon to read incoming events
@@ -125,6 +132,15 @@ impl SlotBusConsumer {
             header.tail.store(0, Ordering::Relaxed);
             header.flags.store(1, Ordering::Relaxed);
 
+            // Initialize Slots
+            for i in 0..capacity {
+                let slot_offset = std::mem::size_of::<SlotBusHeader>() + (i as usize * slot_size as usize);
+                let slot_hdr = &mut *(map_ptr.add(slot_offset) as *mut SlotHeader);
+                slot_hdr.sequence.store(i as usize, Ordering::Relaxed);
+                slot_hdr.len = 0;
+                slot_hdr._reserved = 0;
+            }
+
             Ok(Self {
                 shm_name: name.to_string(),
                 ptr: map_ptr as *mut u8,
@@ -137,29 +153,35 @@ impl SlotBusConsumer {
     pub fn poll_next_bytes(&self) -> Option<Vec<u8>> {
         unsafe {
             let header = &*(self.ptr as *const SlotBusHeader);
-            let tail = header.tail.load(Ordering::Acquire);
-            let head = header.head.load(Ordering::Acquire);
+            let capacity = header.capacity as usize;
+            let slot_hdr_size = std::mem::size_of::<SlotHeader>();
+            let tail = header.tail.load(Ordering::Relaxed);
 
-            if tail >= head {
-                return None;
-            }
-
-            let idx = tail % (header.capacity as usize);
-            let slot_offset = std::mem::size_of::<SlotBusHeader>() + (idx * header.slot_size as usize);
+            let slot_offset = std::mem::size_of::<SlotBusHeader>() + ((tail % capacity) * header.slot_size as usize);
             let slot_ptr = self.ptr.add(slot_offset);
+            let slot_hdr = &*(slot_ptr as *const SlotHeader);
+            let seq = slot_hdr.sequence.load(Ordering::Acquire);
+            let dif = seq as isize - (tail + 1) as isize;
 
-            let len = *(slot_ptr as *const u32) as usize;
-            let max_data = (header.slot_size as usize).saturating_sub(8);
-            let read_len = len.min(max_data);
+            if dif == 0 {
+                let len = slot_hdr.len as usize;
+                let max_data = (header.slot_size as usize).saturating_sub(slot_hdr_size);
+                let read_len = len.min(max_data);
 
-            let data_ptr = slot_ptr.add(8);
-            let mut buf = vec![0u8; read_len];
-            ptr::copy_nonoverlapping(data_ptr, buf.as_mut_ptr(), read_len);
+                let data_ptr = slot_ptr.add(slot_hdr_size);
+                let mut buf = vec![0u8; read_len];
+                ptr::copy_nonoverlapping(data_ptr, buf.as_mut_ptr(), read_len);
 
-            // Advance tail
-            header.tail.store(tail + 1, Ordering::Release);
+                // Advance slot sequence so producer can reuse it next round
+                slot_hdr.sequence.store(tail + capacity, Ordering::Release);
 
-            Some(buf)
+                // Advance tail
+                header.tail.store(tail + 1, Ordering::Relaxed);
+
+                Some(buf)
+            } else {
+                None
+            }
         }
     }
 
@@ -248,38 +270,54 @@ impl SlotBusProducer {
         }
     }
 
-    /// Push raw bytes into ring buffer in <500 nanoseconds
+    /// Push raw bytes into ring buffer in <500 nanoseconds with lockless MPMC/MPSC concurrency
     pub fn send_bytes(&self, data: &[u8]) -> Result<(), SlotBusError> {
         unsafe {
             let header = &*(self.ptr as *const SlotBusHeader);
-            let max_data = (header.slot_size as usize).saturating_sub(8);
+            let slot_hdr_size = std::mem::size_of::<SlotHeader>();
+            let max_data = (header.slot_size as usize).saturating_sub(slot_hdr_size);
             if data.len() > max_data {
                 return Err(SlotBusError::PayloadTooLarge(data.len(), max_data));
             }
 
-            let head = header.head.load(Ordering::Acquire);
-            let tail = header.tail.load(Ordering::Acquire);
+            let capacity = header.capacity as usize;
+            let mut head = header.head.load(Ordering::Relaxed);
 
-            // Check if queue is full
-            if head.saturating_sub(tail) >= header.capacity as usize {
-                return Err(SlotBusError::QueueFull(header.capacity));
+            loop {
+                let slot_offset = std::mem::size_of::<SlotBusHeader>() + ((head % capacity) * header.slot_size as usize);
+                let slot_ptr = self.ptr.add(slot_offset);
+                let slot_hdr = &*(slot_ptr as *const SlotHeader);
+                let seq = slot_hdr.sequence.load(Ordering::Acquire);
+                let dif = seq as isize - head as isize;
+
+                if dif == 0 {
+                    match header.head.compare_exchange_weak(
+                        head,
+                        head + 1,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    ) {
+                        Ok(_) => {
+                            let mut_slot_hdr = &mut *(slot_ptr as *mut SlotHeader);
+                            mut_slot_hdr.len = data.len() as u32;
+
+                            let data_ptr = slot_ptr.add(slot_hdr_size);
+                            ptr::copy_nonoverlapping(data.as_ptr(), data_ptr, data.len());
+
+                            // Mark slot as written and ready for consumption
+                            slot_hdr.sequence.store(head + 1, Ordering::Release);
+                            return Ok(());
+                        }
+                        Err(actual) => {
+                            head = actual;
+                        }
+                    }
+                } else if dif < 0 {
+                    return Err(SlotBusError::QueueFull(header.capacity));
+                } else {
+                    head = header.head.load(Ordering::Relaxed);
+                }
             }
-
-            let idx = head % (header.capacity as usize);
-            let slot_offset = std::mem::size_of::<SlotBusHeader>() + (idx * header.slot_size as usize);
-            let slot_ptr = self.ptr.add(slot_offset);
-
-            // Write length (4 bytes)
-            *(slot_ptr as *mut u32) = data.len() as u32;
-
-            // Write data payload
-            let data_ptr = slot_ptr.add(8);
-            ptr::copy_nonoverlapping(data.as_ptr(), data_ptr, data.len());
-
-            // Release barrier & advance head
-            header.head.store(head + 1, Ordering::Release);
-
-            Ok(())
         }
     }
 
@@ -340,5 +378,66 @@ mod tests {
         producer.send_event(&event).expect("send event");
         let received_ev = consumer.poll_next_event().expect("poll event");
         assert_eq!(received_ev.observed_by, "os");
+    }
+
+    #[test]
+    fn test_slotbus_multi_producer_concurrency() {
+        let shm_name = format!("/mnse_test_mpsc_{}", std::process::id());
+        let capacity = 64;
+        let consumer = SlotBusConsumer::new(&shm_name, capacity, 1024).expect("consumer init");
+
+        let num_threads = 4;
+        let msgs_per_thread = 250;
+        let total_msgs = num_threads * msgs_per_thread;
+
+        let mut handles = Vec::new();
+        for t in 0..num_threads {
+            let name = shm_name.clone();
+            handles.push(std::thread::spawn(move || {
+                let producer = SlotBusProducer::open(&name).expect("producer open");
+                for i in 0..msgs_per_thread {
+                    let msg = format!("th_{}:msg_{}", t, i);
+                    loop {
+                        match producer.send_bytes(msg.as_bytes()) {
+                            Ok(()) => break,
+                            Err(SlotBusError::QueueFull(_)) => {
+                                std::thread::yield_now();
+                            }
+                            Err(e) => panic!("unexpected error: {:?}", e),
+                        }
+                    }
+                }
+            }));
+        }
+
+        // Consumer reads all total_msgs
+        let mut received = Vec::new();
+        let start = std::time::Instant::now();
+        while received.len() < total_msgs && start.elapsed() < std::time::Duration::from_secs(5) {
+            if let Some(bytes) = consumer.poll_next_bytes() {
+                received.push(String::from_utf8(bytes).unwrap());
+            } else {
+                std::thread::yield_now();
+            }
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(received.len(), total_msgs);
+
+        // Check that each thread's messages were received in sequential order
+        for t in 0..num_threads {
+            let thread_msgs: Vec<_> = received
+                .iter()
+                .filter(|m| m.starts_with(&format!("th_{}:", t)))
+                .cloned()
+                .collect();
+            assert_eq!(thread_msgs.len(), msgs_per_thread);
+            for i in 0..msgs_per_thread {
+                assert_eq!(thread_msgs[i], format!("th_{}:msg_{}", t, i));
+            }
+        }
     }
 }

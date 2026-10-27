@@ -160,17 +160,6 @@ impl SessionManager {
                 let _ = self.db.upsert_node(&file_id, "File", file_path, None);
                 let _ = self.db.upsert_edge(&event_node_id, &file_id, "TOUCHED", 1, 1.0);
             }
-            EventType::UrlChanged { domain, search_query, .. } => {
-                let domain_id = format!("domain:{}", domain);
-                let _ = self.db.upsert_node(&domain_id, "Domain", domain, None);
-                let _ = self.db.upsert_edge(&event_node_id, &domain_id, "VISITED", 1, 1.0);
-
-                if let Some(q) = search_query {
-                    let concept_id = format!("concept:{}", q);
-                    let _ = self.db.upsert_node(&concept_id, "Concept", q, None);
-                    let _ = self.db.upsert_edge(&event_node_id, &concept_id, "SEARCHED", 1, 1.0);
-                }
-            }
             _ => {}
         }
     }

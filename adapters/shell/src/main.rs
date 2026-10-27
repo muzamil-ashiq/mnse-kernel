@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use mnse_sdk::SocketClient;
+use mnse_sdk::{mnse_slotbus, AdaptiveClient};
 use mnse_shell_adapter::buffer::EventBuffer;
 use mnse_types::{Event, EventType};
 use std::path::PathBuf;
@@ -54,7 +54,7 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let socket_path = get_socket_path();
-    let client = SocketClient::new(&socket_path);
+    let client = AdaptiveClient::new(mnse_slotbus::DEFAULT_SHM_NAME, &socket_path);
     let buffer = EventBuffer::new();
 
     match cli.command {

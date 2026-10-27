@@ -8,7 +8,6 @@ pub mod http_server;
 pub mod inspector_state;
 pub mod ml;
 pub mod redaction;
-pub mod rhai_engine;
 pub mod socket;
 
 pub use adapter_registry::{AdapterEntry, AdapterRegistry};
@@ -22,4 +21,3 @@ pub use ml::{
     RateMetrics,
 };
 pub use redaction::Redactor;
-pub use rhai_engine::{RhaiRuleEngine, RuleEngine};

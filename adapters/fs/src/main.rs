@@ -2,10 +2,10 @@
 //!
 //! Universally watches the workspace directory via inotify (`notify`),
 //! detects active code file saves & modifications across any editor (Zed, VSCode, Neovim, etc.),
-//! extracts Git branch context, and emits `FileSwitched` events to `~/.mnse/kernel.sock`.
+//! extracts Git branch context, and emits `FileSwitched` events via shared memory (`SlotBus`) with socket fallback.
 
 use clap::Parser;
-use mnse_sdk::SocketClient;
+use mnse_sdk::AdaptiveClient;
 use mnse_types::{Event, EventType};
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("🔍 MNSE Filesystem & Git Adapter active on {:?}", watch_dir);
 
-    let client = SocketClient::default_local();
+    let client = AdaptiveClient::default_local();
     let (tx, rx) = channel();
 
     let mut watcher = RecommendedWatcher::new(tx, Config::default())?;
@@ -52,56 +52,63 @@ async fn main() -> anyhow::Result<()> {
     let debounce_dur = Duration::from_millis(cli.debounce_ms);
 
     loop {
-        // Poll for inotify events
-        if let Ok(res) = rx.recv_timeout(Duration::from_millis(100)) {
-            match res {
-                Ok(event) => {
-                    if is_relevant_event(&event.kind) {
-                        for path in event.paths {
-                            if is_ignored_path(&path) {
-                                continue;
-                            }
+        // Poll for inotify events with eager draining
+        if let Ok(first_res) = rx.recv_timeout(Duration::from_millis(100)) {
+            let mut events = vec![first_res];
+            while let Ok(next_res) = rx.try_recv() {
+                events.push(next_res);
+            }
 
-                            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                                if is_code_extension(ext) {
-                                    let path_str = path.to_string_lossy().to_string();
-                                    let now = Instant::now();
+            for res in events {
+                match res {
+                    Ok(event) => {
+                        if is_relevant_event(&event.kind) {
+                            for path in event.paths {
+                                if is_ignored_path(&path) {
+                                    continue;
+                                }
 
-                                    // Debounce identical path within debounce duration
-                                    if path_str == last_emitted_path && now.duration_since(last_emit_time) < debounce_dur {
-                                        continue;
-                                    }
+                                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                                    if is_code_extension(ext) {
+                                        let path_str = path.to_string_lossy().to_string();
+                                        let now = Instant::now();
 
-                                    last_emitted_path = path_str.clone();
-                                    last_emit_time = now;
-
-                                    let lang = detect_language(ext);
-                                    let git_branch = get_git_branch(&path);
-
-                                    let ev = Event::new(
-                                        EventType::FileSwitched {
-                                            file_path: path_str.clone(),
-                                            line_count: None,
-                                            language: Some(lang.to_string()),
-                                            git_branch,
-                                        },
-                                        "fs",
-                                    );
-
-                                    match client.emit(&ev).await {
-                                        Ok(_) => {
-                                            tracing::info!("FileSwitched: {} [{}]", path_str, lang);
+                                        // Debounce identical path within debounce duration
+                                        if path_str == last_emitted_path && now.duration_since(last_emit_time) < debounce_dur {
+                                            continue;
                                         }
-                                        Err(e) => {
-                                            tracing::debug!("Kernel socket emit error (offline): {}", e);
+
+                                        last_emitted_path = path_str.clone();
+                                        last_emit_time = now;
+
+                                        let lang = detect_language(ext);
+                                        let git_branch = get_git_branch(&path);
+
+                                        let ev = Event::new(
+                                            EventType::FileSwitched {
+                                                file_path: path_str.clone(),
+                                                line_count: None,
+                                                language: Some(lang.to_string()),
+                                                git_branch,
+                                            },
+                                            "fs",
+                                        );
+
+                                        match client.emit(&ev).await {
+                                            Ok(_) => {
+                                                tracing::info!("FileSwitched: {} [{}]", path_str, lang);
+                                            }
+                                            Err(e) => {
+                                                tracing::debug!("Kernel emit error (offline): {}", e);
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                     }
+                    Err(e) => tracing::warn!("Watch error: {:?}", e),
                 }
-                Err(e) => tracing::warn!("Watch error: {:?}", e),
             }
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -135,7 +142,7 @@ fn is_code_extension(ext: &str) -> bool {
         ext.to_lowercase().as_str(),
         "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "toml" | "json" | "yaml" | "yml"
             | "c" | "cpp" | "h" | "hpp" | "go" | "sh" | "fish" | "zsh" | "md" | "sql"
-            | "html" | "css" | "k" | "rhai"
+            | "html" | "css" | "k"
     )
 }
 
@@ -156,7 +163,6 @@ fn detect_language(ext: &str) -> &'static str {
         "sql" => "sql",
         "md" => "markdown",
         "k" => "k",
-        "rhai" => "rhai",
         _ => "text",
     }
 }
@@ -170,12 +176,39 @@ fn get_git_branch(file_or_dir: &Path) -> Option<String> {
     };
 
     while let Some(dir) = curr {
-        let head_path = dir.join(".git/HEAD");
+        let dot_git = dir.join(".git");
+        let head_path = if dot_git.is_dir() {
+            dot_git.join("HEAD")
+        } else if dot_git.is_file() {
+            // Git worktree or submodule: .git is a file containing "gitdir: /path/to/commondir"
+            if let Ok(content) = std::fs::read_to_string(&dot_git) {
+                if let Some(gitdir) = content.trim().strip_prefix("gitdir:") {
+                    let gitdir_path = PathBuf::from(gitdir.trim());
+                    let resolved = if gitdir_path.is_relative() {
+                        dir.join(gitdir_path)
+                    } else {
+                        gitdir_path
+                    };
+                    resolved.join("HEAD")
+                } else {
+                    dir.join(".git/HEAD")
+                }
+            } else {
+                dir.join(".git/HEAD")
+            }
+        } else {
+            dir.join(".git/HEAD")
+        };
+
         if head_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&head_path) {
                 let trimmed = content.trim();
                 if let Some(branch) = trimmed.strip_prefix("ref: refs/heads/") {
                     return Some(branch.to_string());
+                } else if !trimmed.is_empty() {
+                    // Detached HEAD: commit hash (e.g., "05d239b")
+                    let short_sha = if trimmed.len() >= 7 { &trimmed[..7] } else { trimmed };
+                    return Some(short_sha.to_string());
                 }
             }
         }
@@ -214,5 +247,36 @@ mod tests {
         assert!(is_ignored_path(Path::new("/home/user/project/target/debug/app")));
         assert!(is_ignored_path(Path::new("/home/user/project/node_modules/pkg")));
         assert!(!is_ignored_path(Path::new("/home/user/project/src/main.rs")));
+    }
+
+    #[test]
+    fn test_get_git_branch_standard_and_detached_and_worktree() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+
+        // Standard branch
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/feature/branch-x\n").unwrap();
+        let src_file = repo.join("src/main.rs");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(&src_file, "fn main() {}").unwrap();
+
+        assert_eq!(get_git_branch(&src_file), Some("feature/branch-x".to_string()));
+
+        // Detached HEAD
+        std::fs::write(repo.join(".git/HEAD"), "05d239b62a6fe123456789\n").unwrap();
+        assert_eq!(get_git_branch(&src_file), Some("05d239b".to_string()));
+
+        // Git worktree pointer (.git as file)
+        let worktree = temp.path().join("worktree");
+        std::fs::create_dir_all(worktree.join("src")).unwrap();
+        let wt_file = worktree.join("src/lib.rs");
+        std::fs::write(&wt_file, "pub fn f() {}").unwrap();
+        let common_git = temp.path().join("common_git");
+        std::fs::create_dir_all(&common_git).unwrap();
+        std::fs::write(common_git.join("HEAD"), "ref: refs/heads/worktree-branch\n").unwrap();
+        std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", common_git.display())).unwrap();
+
+        assert_eq!(get_git_branch(&wt_file), Some("worktree-branch".to_string()));
     }
 }

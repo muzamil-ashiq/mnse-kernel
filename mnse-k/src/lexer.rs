@@ -20,9 +20,6 @@ pub enum Token {
     KwCause,
     KwCauses,
     KwRelated,
-    KwSpeak,
-    KwLook,
-    KwFollow,
     KwWhere,
     KwSelect,
     KwCare,
@@ -33,6 +30,7 @@ pub enum Token {
     KwEnable,
     KwDisable,
     KwList,
+    KwSh,
 
     // Identifiers & Variables
     Ident(String),
@@ -43,6 +41,9 @@ pub enum Token {
     // Symbols & Operators
     Pipe,       // |
     Arrow,      // ->
+    DotDot,     // ..
+    Minus,      // -
+    Plus,       // +
     EqEq,       // ==
     Neq,        // !=
     Gt,         // >
@@ -67,6 +68,7 @@ pub enum Token {
 pub struct Lexer<'a> {
     input: &'a str,
     pos: usize,
+    pending_token: Option<Token>,
 }
 
 impl<'a> Lexer<'a> {
@@ -85,6 +87,7 @@ impl<'a> Lexer<'a> {
         Self {
             input: trimmed,
             pos: 0,
+            pending_token: None,
         }
     }
 
@@ -102,6 +105,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn next_token(&mut self) -> anyhow::Result<Token> {
+        if let Some(tok) = self.pending_token.take() {
+            return Ok(tok);
+        }
+
         self.skip_whitespace_and_comments();
 
         if self.pos >= self.input.len() {
@@ -132,10 +139,34 @@ impl<'a> Lexer<'a> {
             self.pos += 2;
             return Ok(Token::Lte);
         }
+        if rest.starts_with("..") && !rest.starts_with("../") {
+            self.pos += 2;
+            return Ok(Token::DotDot);
+        }
+
+        // File path literal: /path/to/file, ./file, ../file, ~/file
+        if (ch == '/' && !rest.starts_with("//"))
+            || rest.starts_with("./")
+            || rest.starts_with("../")
+            || rest.starts_with("~/")
+        {
+            let start = self.pos;
+            while self.pos < self.input.len() {
+                let c = self.input[self.pos..].chars().next().unwrap();
+                if c.is_whitespace() || c == ';' || c == '|' || c == ']' || c == ')' || c == '}' || c == ',' {
+                    break;
+                }
+                self.pos += c.len_utf8();
+            }
+            let path_str = self.input[start..self.pos].to_string();
+            return Ok(Token::Str(path_str));
+        }
 
         // Single character symbols
         match ch {
             '|' => { self.pos += 1; return Ok(Token::Pipe); }
+            '-' => { self.pos += 1; return Ok(Token::Minus); }
+            '+' => { self.pos += 1; return Ok(Token::Plus); }
             '=' => { self.pos += 1; return Ok(Token::Assign); }
             '>' => { self.pos += 1; return Ok(Token::Gt); }
             '<' => { self.pos += 1; return Ok(Token::Lt); }
@@ -168,13 +199,14 @@ impl<'a> Lexer<'a> {
             return Ok(Token::Var(var_name));
         }
 
-        // String literal: "..."
-        if ch == '"' {
+        // String literal: "..." or '...'
+        if ch == '"' || ch == '\'' {
+            let quote = ch;
             self.pos += 1;
             let start = self.pos;
             while self.pos < self.input.len() {
                 let c = self.input[self.pos..].chars().next().unwrap();
-                if c == '"' {
+                if c == quote {
                     let s = self.input[start..self.pos].to_string();
                     self.pos += 1; // skip closing quote
                     return Ok(Token::Str(s));
@@ -251,9 +283,6 @@ impl<'a> Lexer<'a> {
                 "cause" => Token::KwCause,
                 "causes" => Token::KwCauses,
                 "related" => Token::KwRelated,
-                "speak" => Token::KwSpeak,
-                "look" => Token::KwLook,
-                "follow" => Token::KwFollow,
                 "where" => Token::KwWhere,
                 "select" => Token::KwSelect,
                 "care" => Token::KwCare,
@@ -264,6 +293,47 @@ impl<'a> Lexer<'a> {
                 "enable" => Token::KwEnable,
                 "disable" => Token::KwDisable,
                 "list" => Token::KwList,
+                "sh" => {
+                    self.skip_whitespace_and_comments();
+                    if self.pos < self.input.len() && self.input[self.pos..].starts_with('{') {
+                        self.pos += 1; // consume '{'
+                        let block_start = self.pos;
+                        let mut depth = 1;
+                        let mut in_str = false;
+                        let mut escape = false;
+                        while self.pos < self.input.len() && depth > 0 {
+                            let c = self.input[self.pos..].chars().next().unwrap();
+                            let c_len = c.len_utf8();
+                            if in_str {
+                                if escape {
+                                    escape = false;
+                                } else if c == '\\' {
+                                    escape = true;
+                                } else if c == '"' {
+                                    in_str = false;
+                                }
+                            } else {
+                                if c == '"' {
+                                    in_str = true;
+                                } else if c == '{' {
+                                    depth += 1;
+                                } else if c == '}' {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        let block = self.input[block_start..self.pos].trim().to_string();
+                                        self.pos += c_len; // consume closing '}'
+                                        self.pending_token = Some(Token::Str(block));
+                                        return Ok(Token::KwSh);
+                                    }
+                                }
+                            }
+                            self.pos += c_len;
+                        }
+                        return Err(anyhow::anyhow!("Unterminated shell block: missing closing '}}'"));
+                    } else {
+                        Token::KwSh
+                    }
+                }
                 _ => Token::Ident(word.to_string()),
             });
         }
@@ -311,5 +381,27 @@ mod tests {
         assert_eq!(tokens[7], Token::EqEq);
         assert_eq!(tokens[8], Token::Str("zed".into()));
         assert_eq!(tokens[9], Token::Eof);
+    }
+
+    #[test]
+    fn test_lexer_sh_block() {
+        let mut lexer = Lexer::new("sh { pdftotext -layout $file - }");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::KwSh);
+        assert_eq!(tokens[1], Token::Str("pdftotext -layout $file -".into()));
+        assert_eq!(tokens[2], Token::Eof);
+    }
+
+    #[test]
+    fn test_lexer_vector_slice_tokens() {
+        let mut lexer = Lexer::new("data[0..-1]");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0], Token::Ident("data".into()));
+        assert_eq!(tokens[1], Token::LBracket);
+        assert_eq!(tokens[2], Token::Num(0.0));
+        assert_eq!(tokens[3], Token::DotDot);
+        assert_eq!(tokens[4], Token::Minus);
+        assert_eq!(tokens[5], Token::Num(1.0));
+        assert_eq!(tokens[6], Token::RBracket);
     }
 }

@@ -40,17 +40,35 @@ impl HttpClient {
         Self::new("http://127.0.0.1:7780")
     }
 
-    /// Fetch live context snapshot
+    /// Fetch context snapshot (with optional point-in-time "at" natural time query)
     pub async fn get_snapshot(&self, format: &str) -> Result<ContextSnapshot> {
-        let url = format!("{}/snapshot?format={}", self.base_url, format);
-        let resp = self.client.get(&url).send().await?.json::<ContextSnapshot>().await?;
+        self.get_snapshot_at(format, None).await
+    }
+
+    /// Fetch context snapshot at a specific point in time
+    pub async fn get_snapshot_at(&self, format: &str, at: Option<&str>) -> Result<ContextSnapshot> {
+        let mut req = self.client.get(format!("{}/snapshot", self.base_url));
+        req = req.query(&[("format", format)]);
+        if let Some(t) = at {
+            req = req.query(&[("at", t)]);
+        }
+        let resp = req.send().await?.json::<ContextSnapshot>().await?;
         Ok(resp)
     }
 
-    /// Fetch raw TOON format string
+    /// Fetch formatted TOON string
     pub async fn get_snapshot_toon(&self) -> Result<String> {
-        let url = format!("{}/snapshot?format=toon", self.base_url);
-        let resp = self.client.get(&url).send().await?.text().await?;
+        self.get_snapshot_toon_at("rich", None).await
+    }
+
+    /// Fetch formatted TOON string at a specific point in time
+    pub async fn get_snapshot_toon_at(&self, format: &str, at: Option<&str>) -> Result<String> {
+        let mut req = self.client.get(format!("{}/snapshot", self.base_url));
+        req = req.query(&[("format", format)]);
+        if let Some(t) = at {
+            req = req.query(&[("at", t)]);
+        }
+        let resp = req.send().await?.text().await?;
         Ok(resp)
     }
 
@@ -177,6 +195,29 @@ impl SocketClient {
         let resp = serde_json::from_str::<SocketResponsePayload>(&line)?;
         Ok(resp)
     }
+
+    /// Open a live tap stream to receive real-time events over Unix socket
+    pub async fn tap_stream(
+        &self,
+        adapter: Option<&str>,
+        raw: bool,
+    ) -> Result<tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>> {
+        let stream = UnixStream::connect(&self.socket_path).await?;
+        let (reader, mut writer) = stream.into_split();
+        let cmd = serde_json::json!({
+            "cmd": "tap",
+            "adapter": adapter,
+            "raw": raw,
+        });
+        writer.write_all(format!("{}\n", serde_json::to_string(&cmd)?).as_bytes()).await?;
+
+        let mut lines = BufReader::new(reader).lines();
+        // Consume first acknowledgement line: {"status":"streaming"}
+        if let Ok(Some(_ack)) = lines.next_line().await {
+            // ready
+        }
+        Ok(lines)
+    }
 }
 
 /// Ultra-fast nanosecond-latency Shared Memory Client via SlotBus
@@ -213,6 +254,37 @@ impl SlotBusClient {
     }
 }
 
+/// Hybrid high-performance client: writes directly to lockless shared memory (`SlotBusClient`),
+/// falling back seamlessly to UNIX domain socket (`SocketClient`) if the shared memory segment is offline.
+pub struct AdaptiveClient {
+    pub shm: SlotBusClient,
+    pub socket: SocketClient,
+}
+
+impl AdaptiveClient {
+    pub fn default_local() -> Self {
+        Self {
+            shm: SlotBusClient::default_local(),
+            socket: SocketClient::default_local(),
+        }
+    }
+
+    pub fn new(shm_name: &str, socket_path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            shm: SlotBusClient::new(shm_name),
+            socket: SocketClient::new(socket_path),
+        }
+    }
+
+    /// Emits an event with <500ns shared memory priority, falling back to UNIX socket
+    pub async fn emit(&self, event: &Event) -> Result<()> {
+        if self.shm.emit(event).is_ok() {
+            return Ok(());
+        }
+        self.socket.emit(event).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +296,8 @@ mod tests {
 
         let socket = SocketClient::default_local();
         assert!(socket.socket_path.to_string_lossy().contains("kernel.sock"));
+
+        let adaptive = AdaptiveClient::default_local();
+        assert!(adaptive.socket.socket_path.to_string_lossy().contains("kernel.sock"));
     }
 }

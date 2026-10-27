@@ -79,32 +79,12 @@ impl GraphBuilder {
                 self.handle_file_switched(event_ts, file_path, language.as_deref(), git_branch.as_deref());
             }
 
-            EventType::UrlChanged {
-                url,
-                title,
-                domain,
-                search_query,
-            } => {
-                self.handle_browser_url(event_ts, url, title.as_deref(), domain, search_query.as_deref());
-            }
-
             EventType::ClipboardChanged {
                 content_hash,
                 content_preview,
                 content_len,
             } => {
                 self.handle_clipboard(event_ts, content_hash, content_preview.as_deref(), *content_len);
-            }
-
-            EventType::PersonVisible { identity, confidence } => {
-                let person_id = format!("person:{}", identity);
-                let _ = self.db.upsert_node(
-                    &person_id,
-                    "Person",
-                    identity,
-                    Some(serde_json::json!({ "confidence": confidence })),
-                );
-                self.add_to_stm(person_id, "Person", identity, event_ts);
             }
 
             _ => {}
@@ -207,25 +187,6 @@ impl GraphBuilder {
         for item in stm.iter() {
             if event_ts >= item.timestamp && (item.node_type == "Error" || item.node_type == "Concept" || item.node_type == "Command") {
                 let _ = self.db.upsert_edge(&item.id, &file_id, "IN_STM_DURING", 1, 1.0);
-            }
-        }
-    }
-
-    fn handle_browser_url(&self, event_ts: i64, url_str: &str, _title: Option<&str>, domain: &str, search_query: Option<&str>) {
-        let domain_id = format!("domain:{}", domain);
-        let _ = self.db.upsert_node(&domain_id, "Domain", domain, None);
-
-        if let Some(query) = search_query {
-            if !query.is_empty() {
-                let concept_id = format!("concept:{}", query);
-                let _ = self.db.upsert_node(
-                    &concept_id,
-                    "Concept",
-                    query,
-                    Some(serde_json::json!({ "url": url_str })),
-                );
-                let _ = self.db.upsert_edge(&concept_id, &domain_id, "SEARCHED_ON", 1, 1.0);
-                self.add_to_stm(concept_id, "Concept", query, event_ts);
             }
         }
     }

@@ -109,10 +109,6 @@ impl Default for KernelConfig {
                 ],
                 high_priority_events: vec![
                     "ErrorDetected".to_string(),
-                    "ActionRequested".to_string(),
-                    "WakeWordDetected".to_string(),
-                    "FallDetected".to_string(),
-                    "ObstacleDetected".to_string(),
                 ],
             },
         }

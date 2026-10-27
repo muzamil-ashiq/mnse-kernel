@@ -1,6 +1,6 @@
 # MNSE Sensory Adapters
 
-Sensory adapters observe environment state changes and publish typed events to the kernel via shared memory (`SlotBus`) and the local UNIX socket (`~/.mnse/kernel.sock`).
+Sensory adapters observe environment state changes and publish typed events to the kernel via lockless shared memory (`SlotBus`, `/dev/shm/mnse_slotbus`, <500ns latency) with automatic fallback to the local UNIX socket (`~/.mnse/kernel.sock`).
 
 ---
 
@@ -10,9 +10,11 @@ Sensory adapters observe environment state changes and publish typed events to t
 - **Source:** `adapters/os/`
 - **Systemd Unit:** `mnse-os-adapter.service`
 - **Implementation:**
-  - Queries Hyprland state via `hyprctl activewindow -j` and `hyprctl workspaces -j` with a 500ms polling interval.
-  - Emits `EventType::WindowFocused` whenever the active window address changes, capturing app class, window title, address ID, and active workspace.
-  - Emits `EventType::WorkspaceChanged` whenever the total workspace count changes.
+  - Connects natively to Hyprland's IPC socket2 (`$XDG_RUNTIME_DIR/hypr/*/.socket2.sock`) for event-driven push telemetry (<100µs latency, 0.00% idle CPU).
+  - One-time initial seeding via `hyprctl activewindow -j` and `hyprctl workspaces -j` upon adapter startup.
+  - Emits `EventType::WindowFocused` on `activewindow` events, capturing app class, window title, address ID, and active workspace.
+  - Emits `EventType::WorkspaceChanged` on `workspace`, `createworkspace`, and `destroyworkspace` events.
+  - Emits directly to `SlotBusClient` shared memory with automatic `SocketClient` fallback.
 
 ---
 
@@ -23,12 +25,12 @@ Sensory adapters observe environment state changes and publish typed events to t
 - **Systemd Unit:** `mnse-fs-adapter.service`
 - **Default Argument:** `--path %h/Applications`
 - **Implementation:**
-  - Watches directory trees recursively using the `notify` inotify watcher.
+  - Watches directory trees recursively using the `notify` inotify watcher with an eager drain loop (`try_recv` batching) to prevent event lag under heavy build bursts.
   - Debounces identical path events within 300ms (`--debounce-ms`).
-  - Filters out noise directories (`target/`, `.git/`, `node_modules/`, `.cache/`, etc.).
+  - Filters out noise directories (`target/`, `.git/`, `node_modules/`, `.cache/`, `dist/`, `tmp/`, etc.).
   - Detects source code extensions (`.rs`, `.py`, `.ts`, `.js`, `.go`, `.k`, `.c`, `.cpp`, `.md`, etc.) and determines language.
-  - Dynamically searches upward parent directories for `.git/HEAD` to resolve the current Git branch of any sub-project.
-  - Emits `EventType::FileSwitched` with `file_path`, `language`, and `git_branch`.
+  - Dynamically searches upward parent directories for `.git/HEAD`, supporting standard `.git` directories, git worktree pointers (`gitdir: ...`), and detached HEAD commit hashes.
+  - Emits `EventType::FileSwitched` with `file_path`, `language`, and `git_branch` via `AdaptiveClient`.
 
 ---
 
@@ -42,10 +44,11 @@ Sensory adapters observe environment state changes and publish typed events to t
   - `record-cd`: Captures directory transitions.
   - `install-hooks`: Generates shell hook scripts for Fish, Zsh, or Bash.
 - **Event Emission:**
+  - Emits directly to `/dev/shm/mnse_slotbus` via `AdaptiveClient` in <500 nanoseconds with automatic socket fallback.
   - Emits `EventType::ProcessExecuted` on command completion.
   - When `exit_code != 0`, emits a causally linked `EventType::ErrorDetected` with error pattern classification (`RustCompile`, `PythonTraceback`, etc.) referencing `parent_event_id`.
   - Emits `EventType::DirectoryChanged` on directory switches.
-  - **Offline Buffering:** If the kernel socket is offline, events are buffered in memory and flushed automatically once connectivity is restored.
+  - **Offline Buffering:** If kernel IPC is offline, events are buffered in memory and flushed automatically once connectivity is restored.
   - Uses asynchronous background dispatch (`>/dev/null 2>&1 &`) in shell hooks to prevent terminal latency.
 
 ### Generating Hooks

@@ -2,5 +2,5 @@
 
 pub mod client;
 
-pub use client::{HttpClient, SlotBusClient, SocketClient};
+pub use client::{AdaptiveClient, HttpClient, SlotBusClient, SocketClient};
 pub use mnse_slotbus;

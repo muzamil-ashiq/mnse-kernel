@@ -79,18 +79,14 @@ impl Event {
 
 // ── EventSource ───────────────────────────────────────────────────────────────
 
-/// Coarse category used for quick filtering (Rhai, ledger queries, MCP)
+/// Coarse category used for quick filtering (ledger queries, MCP)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EventSource {
     Os,
     Shell,
-    Browser,
     Editor,
-    Vision,
-    Audio,
     System,
-    Agent,
     Kernel, // internal events emitted by the kernel itself
 }
 
@@ -106,25 +102,12 @@ impl EventSource {
             | EventType::DirectoryChanged { .. }
             | EventType::ErrorDetected { .. } => Self::Shell,
 
-            EventType::UrlChanged { .. }
-            | EventType::TabSwitched { .. }
-            | EventType::TabUpdated { .. } => Self::Browser,
-
             EventType::FileSwitched { .. }
             | EventType::CursorMoved { .. }
             | EventType::SelectionChanged { .. }
             | EventType::DiagnosticsUpdated { .. } => Self::Editor,
 
-            EventType::PersonVisible { .. } | EventType::PersonGone { .. } => Self::Vision,
-
-            EventType::VoiceDetected { .. }
-            | EventType::VoiceSilence
-            | EventType::WakeWordDetected { .. }
-            | EventType::TranscriptionResult { .. } => Self::Audio,
-
             EventType::ResourcesUpdated { .. } | EventType::SystemHeartbeat => Self::System,
-
-            EventType::AgentStarted { .. } | EventType::AgentEnded { .. } => Self::Agent,
 
             _ => Self::System,
         }
@@ -236,67 +219,6 @@ pub enum EventType {
         warning_count: u32,
     },
 
-    // ── Browser Adapter ───────────────────────────────────────────────────
-
-    /// Browser active tab URL changed
-    UrlChanged {
-        url: String,             // redacted unless MNSE_PRIVACY_MODE=false
-        title: Option<String>,   // redacted unless MNSE_PRIVACY_MODE=false
-        domain: String,          // always stored (not PII)
-        search_query: Option<String>, // extracted if Google/DDG URL
-    },
-
-    /// User switched to a different browser tab
-    TabSwitched {
-        url: String,
-        title: Option<String>,
-        domain: String,
-        tab_index: u32,
-    },
-
-    /// Tab title or URL was updated (page load complete)
-    TabUpdated {
-        url: String,
-        title: Option<String>,
-        domain: String,
-    },
-
-    // ── Vision Adapter ────────────────────────────────────────────────────
-
-    /// A known person appeared in the webcam frame (YuNet + LBPH)
-    PersonVisible {
-        identity: String,       // "mab" or "stranger"
-        confidence: f32,        // LBPH confidence (0.0–1.0)
-    },
-
-    /// The previously visible person is no longer in frame
-    PersonGone {
-        identity: String,
-        visible_duration_secs: Option<u64>,
-    },
-
-    // ── Audio Adapter ─────────────────────────────────────────────────────
-
-    /// Voice activity detected in microphone input
-    VoiceDetected {
-        duration_ms: u32,
-    },
-
-    /// Silence after voice activity
-    VoiceSilence,
-
-    /// Wake word was detected (e.g. "antigravity", "wake up")
-    WakeWordDetected {
-        word: String,
-    },
-
-    /// Faster-Whisper transcription completed
-    TranscriptionResult {
-        text: String,
-        confidence: f32,
-        duration_ms: u32,
-    },
-
     // ── System Adapter ────────────────────────────────────────────────────
 
     // Noise — SSE only, NEVER stored in SQLite
@@ -309,27 +231,6 @@ pub enum EventType {
 
     /// System adapter heartbeat (SSE only, never stored)
     SystemHeartbeat,
-
-    // ── Action Events (Actuator Adapters listen to these) ─────────────────
-
-    /// A typed action to be performed by an actuator adapter.
-    /// Emitted by K behaviors, routed via EventBus priority fast-path.
-    ActionRequested(ActionPayload),
-
-    // ── Agent Lifecycle ───────────────────────────────────────────────────
-
-    /// An AI agent connected and identified itself
-    AgentStarted {
-        agent_name: String,
-        agent_version: Option<String>,
-        capabilities: Vec<String>,
-    },
-
-    /// An AI agent disconnected
-    AgentEnded {
-        agent_name: String,
-        session_duration_secs: Option<u64>,
-    },
 
     // ── Adapter Lifecycle ─────────────────────────────────────────────────
 
@@ -362,7 +263,7 @@ pub enum EventType {
 }
 
 impl EventType {
-    /// The canonical string name used in SQLite, Rhai, and FTS5
+    /// The canonical string name used in SQLite and FTS5
     pub fn type_name(&self) -> &'static str {
         match self {
             Self::WindowFocused { .. }      => "WindowFocused",
@@ -379,20 +280,8 @@ impl EventType {
             Self::CursorMoved { .. }        => "CursorMoved",
             Self::SelectionChanged { .. }   => "SelectionChanged",
             Self::DiagnosticsUpdated { .. } => "DiagnosticsUpdated",
-            Self::UrlChanged { .. }         => "UrlChanged",
-            Self::TabSwitched { .. }        => "TabSwitched",
-            Self::TabUpdated { .. }         => "TabUpdated",
-            Self::PersonVisible { .. }      => "PersonVisible",
-            Self::PersonGone { .. }         => "PersonGone",
-            Self::VoiceDetected { .. }      => "VoiceDetected",
-            Self::VoiceSilence              => "VoiceSilence",
-            Self::WakeWordDetected { .. }   => "WakeWordDetected",
-            Self::TranscriptionResult { .. }=> "TranscriptionResult",
             Self::ResourcesUpdated { .. }   => "ResourcesUpdated",
             Self::SystemHeartbeat           => "SystemHeartbeat",
-            Self::ActionRequested(_)        => "ActionRequested",
-            Self::AgentStarted { .. }       => "AgentStarted",
-            Self::AgentEnded { .. }         => "AgentEnded",
             Self::AdapterConnected { .. }   => "AdapterConnected",
             Self::AdapterDisconnected { .. }=> "AdapterDisconnected",
             Self::AdapterHeartbeat { .. }   => "AdapterHeartbeat",
@@ -418,83 +307,8 @@ impl EventType {
 
     /// Returns true for high-priority events that get fast-path routing
     pub fn is_high_priority(&self) -> bool {
-        matches!(
-            self,
-            Self::ErrorDetected { .. }
-            | Self::ActionRequested(_)
-            | Self::WakeWordDetected { .. }
-        )
+        matches!(self, Self::ErrorDetected { .. })
     }
-}
-
-// ── ActionPayload ─────────────────────────────────────────────────────────────
-
-/// Typed action commands sent to actuator adapters via EventBus.
-/// Actuator adapters subscribe to SSE and handle these.
-/// K behaviors dispatch these via `speak`, `look`, `follow`, etc.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "action", rename_all = "PascalCase")]
-pub enum ActionPayload {
-    /// Play text-to-speech audio (handled by Kokoro TTS actuator)
-    Speak {
-        text: String,
-        voice: Option<String>,   // default: "kokoro-v0.19-en"
-        speed: Option<f32>,      // default: 1.0
-    },
-
-    /// Stop any currently playing TTS audio
-    SpeakStop,
-
-    /// Direct a camera or robot head to a position
-    LookAt {
-        direction: LookDirection,
-    },
-
-    /// Begin tracking a target entity
-    Follow {
-        target: String,          // "mab", "face", or object label
-    },
-
-    /// Stop following / return to neutral
-    FollowStop,
-
-    /// Move a named servo to an angle (ESP32 / ROS2 actuators)
-    MoveServo {
-        joint: String,
-        angle_degrees: f32,
-    },
-
-    /// Drive a wheeled robot
-    MoveWheel {
-        direction: WheelDirection,
-        speed_percent: f32,
-        duration_ms: Option<u32>,
-    },
-
-    /// Send a desktop notification
-    Notify {
-        title: String,
-        body: String,
-        urgency: NotifyUrgency,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LookDirection {
-    Left, Right, Up, Down, Forward, TrackFace,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum WheelDirection {
-    Forward, Backward, Left, Right, Stop,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum NotifyUrgency {
-    Low, Normal, Critical,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -559,7 +373,6 @@ mod tests {
             command: "".into(), exit_code: 1,
             error_pattern: None, working_dir: "".into(),
         }.type_name(), "ErrorDetected");
-        assert_eq!(EventType::ActionRequested(ActionPayload::SpeakStop).type_name(), "ActionRequested");
     }
 
     #[test]
@@ -575,9 +388,6 @@ mod tests {
             command: "ls".into(), exit_code: 1,
             error_pattern: None, working_dir: "/".into(),
         }.is_high_priority());
-        assert!(EventType::ActionRequested(ActionPayload::Speak {
-            text: "hello".into(), voice: None, speed: None,
-        }).is_high_priority());
         assert!(!EventType::WindowFocused {
             app_name: "code".into(), window_title: "test".into(),
             window_class: "code".into(), window_id: "1".into(),
@@ -595,10 +405,11 @@ mod tests {
             EventSource::Shell
         );
         assert_eq!(
-            EventSource::from_event_type(&EventType::PersonVisible {
-                identity: "mab".into(), confidence: 0.99,
+            EventSource::from_event_type(&EventType::FileSwitched {
+                file_path: "main.rs".into(), language: Some("rust".into()),
+                git_branch: None, line_count: None,
             }),
-            EventSource::Vision
+            EventSource::Editor
         );
     }
 }

@@ -5,6 +5,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [2.1.0] - 2026-10-28 (Sensory IPC Hardening & Architecture Realignment)
+
+### Removed
+- **Dead Rhai Scripting Engine:** Removed unreferenced `rhai_engine.rs`, trait `RuleEngine`, and `rhai` dependency tree from `mnse-kernel` and workspace dependencies.
+- **Obsolete Robotics & Hardware Schemas:** Purged `FallDetected`, `ObstacleDetected`, `EmergencyStop`, `ActionPayload`, `LookDirection`, `WheelDirection`, and `EventType::ActionRequested`.
+- **Phantom Sensory Schemas:** Purged unbacked variants `Vision` (`PersonVisible`, `PersonGone`), `Audio` (`VoiceDetected`, `VoiceSilence`, `WakeWordDetected`, `TranscriptionResult`), `Browser` (`UrlChanged`, `TabSwitched`, `TabUpdated`), and `Agent` (`AgentStarted`, `AgentEnded`).
+- **Dead Snapshot Fields:** Removed phantom fields (`browser_*`, `person_*`, `voice_*`) from `ContextSnapshot` and TOON serializers.
+- **Dummy Kernel Endpoint:** Removed mock `POST /evaluate` returning placeholder response.
+
+### Changed & Improved
+- **Direct Shared Memory Sensory Intake (`SlotBus`):**
+  - Added `AdaptiveClient` to `mnse-sdk` providing nanosecond-latency lockless shared memory event emission (`/dev/shm/mnse_slotbus`, <500ns) with automatic fallback to UNIX domain socket.
+  - Upgraded all three sensory adapters (`mnse-os-adapter`, `mnse-fs-adapter`, `mnse-shell-adapter`) to emit through `AdaptiveClient`.
+- **Event-Driven Hyprland Sensor:** Realignment of `mnse-os-adapter` documentation to reflect native push telemetry via Hyprland IPC `socket2.sock` (<100µs latency, 0.00% idle CPU) with one-time state seeding.
+- **Inotify Eager Drain Loop (`mnse-fs-adapter`):** Replaced single-event receiver tick with eager `rx.try_recv()` batch draining to prevent queue lag under high-frequency compilation bursts.
+- **Git Worktree & Detached HEAD Support (`mnse-fs-adapter`):** Added upward discovery for `.git` file pointers (`gitdir: ...`) and detached HEAD commit hash resolution.
+- **K CLI Script Dispatch Hardening:** Restricted file execution strictly to files ending with `.k`, preventing accidental execution of non-script files or syntax errors.
+
+---
+
 ## [2.0.0] - 2026-10-19 (Modern Digital Nervous System Architecture)
 
 ### Added
@@ -28,7 +48,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
   - Offline JSONL buffering for fault tolerance during kernel restarts.
   - Auto-installed Fish integration via `~/.config/fish/conf.d/mnse.fish`.
 - **Hyprland Wayland Compositor Sensor (`adapters/os`):**
-  - Live window focus, title, class, and workspace tracking via 500ms `hyprctl` polling.
+  - Live window focus, title, class, and workspace tracking via native Hyprland IPC `socket2.sock` push streaming.
 - **K Language Engine v2.0 (`mnse-k`):**
   - Direct execution of `.k` script files (`k script.k`).
   - Object dot traversal on pipeline variables (`$it.exit_code`, `$it.command`).

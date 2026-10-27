@@ -1,12 +1,11 @@
 //! Axum HTTP Server for MNSE Kernel.
 //!
-//! Exposes 7 core endpoints:
+//! Exposes core endpoints:
 //! - GET  /snapshot?format=json|toon   → live context snapshot
 //! - GET  /health                       → kernel health check
 //! - GET  /ledger/events?limit=&source= → query event history
 //! - GET  /events/live                  → SSE stream for actuators & behaviors
 //! - POST /emit                         → adapter event ingestion
-//! - POST /evaluate                     → execute K expressions
 //! - GET  /graph/node?id=               → graph node lookup
 
 use crate::adapter_registry::AdapterRegistry;
@@ -45,16 +44,19 @@ pub struct AppState {
 #[derive(Debug, Deserialize)]
 pub struct SnapshotQuery {
     pub format: Option<String>,
+    pub at: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct LiveEventsQuery {
+    pub adapter: Option<String>,
+    pub source: Option<String>,
+    pub raw: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct NodeQuery {
     pub id: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct EvalRequest {
-    pub code: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,7 +76,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/ledger/stats", get(get_ledger_stats))
         .route("/events/live", get(get_live_events))
         .route("/emit", post(emit_event))
-        .route("/evaluate", post(evaluate_k))
         .route("/graph/node", get(get_graph_node))
         .route("/adapters", get(get_adapters))
         .route("/adapters/:name/enable", post(enable_adapter))
@@ -83,11 +84,60 @@ pub fn create_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// GET /snapshot?format=json|toon
+/// GET /snapshot?format=json|toon|rich&at=<natural-time>
 async fn get_snapshot(
     State(state): State<AppState>,
     Query(query): Query<SnapshotQuery>,
 ) -> impl IntoResponse {
+    let format = query.format.as_deref().unwrap_or("rich");
+
+    // Handle point-in-time historical state reconstruction
+    if let Some(at_str) = query.at.as_deref() {
+        match mnse_types::parse_natural_time(at_str) {
+            Ok(target_dt) => {
+                let events = state.ledger.query_events_before(target_dt.timestamp(), 200).unwrap_or_default();
+                let hist_inspector = InspectorState::new(state.redactor.privacy_mode);
+                for ev in &events {
+                    hist_inspector.process_event(ev);
+                }
+                let mut snap = hist_inspector.snapshot();
+                snap.timestamp = target_dt;
+                let date_str = target_dt.format("%Y-%m-%d").to_string();
+                if let Ok(stats) = state.ledger.daily_stats(&date_str) {
+                    snap.daily_stats = stats;
+                }
+                state.redactor.redact_snapshot(&mut snap);
+
+                return if format == "json" {
+                    Json(snap).into_response()
+                } else if format == "compact" {
+                    let formatted = format!(
+                        "[state:reconstructed at {} ({})]\n{}",
+                        target_dt.format("%Y-%m-%d %H:%M:%S UTC"),
+                        at_str,
+                        snap.to_toon()
+                    );
+                    formatted.into_response()
+                } else {
+                    let formatted = format!(
+                        "[state:reconstructed at {} ({})]\n{}",
+                        target_dt.format("%Y-%m-%d %H:%M:%S UTC"),
+                        at_str,
+                        snap.to_toon_rich()
+                    );
+                    formatted.into_response()
+                };
+            }
+            Err(e) => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    format!("Invalid natural time expression '{}': {}", at_str, e),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     let mut snap = state.inspector.snapshot();
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     if let Ok(stats) = state.ledger.daily_stats(&today) {
@@ -95,12 +145,12 @@ async fn get_snapshot(
     }
     state.redactor.redact_snapshot(&mut snap);
 
-    let format = query.format.as_deref().unwrap_or("toon");
-
     if format == "json" {
         Json(snap).into_response()
-    } else {
+    } else if format == "compact" {
         snap.to_toon().into_response()
+    } else {
+        snap.to_toon_rich().into_response()
     }
 }
 
@@ -152,13 +202,34 @@ async fn get_ledger_stats(
     }
 }
 
-/// GET /events/live — SSE stream for actuators and K behaviors
+/// GET /events/live — SSE stream for actuators, K behaviors, and creator taps
 async fn get_live_events(
     State(state): State<AppState>,
+    Query(query): Query<LiveEventsQuery>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<SseEvent, Infallible>>> {
     let rx = state.bus.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|item| match item {
-        Ok(event) => {
+    let adapter_filter = query.adapter;
+    let source_filter = query.source;
+    let is_raw = query.raw.unwrap_or(false);
+    let redactor = state.redactor.clone();
+
+    let stream = BroadcastStream::new(rx).filter_map(move |item| match item {
+        Ok(mut event) => {
+            if let Some(target_adapter) = &adapter_filter {
+                let matches = event.observed_by.eq_ignore_ascii_case(target_adapter)
+                    || format!("{:?}", event.source).eq_ignore_ascii_case(target_adapter);
+                if !matches {
+                    return None;
+                }
+            }
+            if let Some(target_source) = &source_filter {
+                if !format!("{:?}", event.source).eq_ignore_ascii_case(target_source) {
+                    return None;
+                }
+            }
+            if !is_raw {
+                redactor.redact_event(&mut event);
+            }
             let json = serde_json::to_string(&event).unwrap_or_default();
             Some(Ok(SseEvent::default().data(json)))
         }
@@ -256,19 +327,6 @@ async fn disable_adapter(
         )
             .into_response(),
     }
-}
-
-/// POST /evaluate — Evaluate K language string
-async fn evaluate_k(
-    State(_state): State<AppState>,
-    Json(req): Json<EvalRequest>,
-) -> impl IntoResponse {
-    // Placeholder until mnse-k crate is attached
-    Json(serde_json::json!({
-        "status": "evaluated",
-        "code": req.code,
-        "result": "K engine ready"
-    }))
 }
 
 /// GET /graph/node?id=

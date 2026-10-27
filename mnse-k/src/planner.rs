@@ -3,7 +3,6 @@
 //! Maps KProgram AST nodes into an executable sequence of KernelOps.
 
 use crate::ast::*;
-use mnse_types::ActionPayload;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -30,7 +29,6 @@ pub enum KernelOp {
     Care,
     Summary { range: String },
     Adapter { action: String, name: Option<String> },
-    Action(ActionPayload),
     Help,
     Literal(serde_json::Value),
     Var(String),
@@ -41,6 +39,25 @@ pub enum KernelOp {
         op: String,
         left: Box<KernelOp>,
         right: Box<KernelOp>,
+    },
+    Sh(String),
+    Index {
+        target: Box<KernelOp>,
+        index: Box<KernelOp>,
+    },
+    Slice {
+        target: Box<KernelOp>,
+        start: Option<Box<KernelOp>>,
+        end: Option<Box<KernelOp>>,
+    },
+    FieldAccess {
+        target: Box<KernelOp>,
+        field: String,
+    },
+    Call {
+        namespace: String,
+        operation: String,
+        args: Vec<KernelOp>,
     },
 }
 
@@ -137,7 +154,6 @@ impl Planner {
                 action: action.clone(),
                 name: name.clone(),
             }),
-            KStatement::Action(payload) => Ok(KernelOp::Action(payload.clone())),
             KStatement::Help => Ok(KernelOp::Help),
         }
     }
@@ -168,6 +184,28 @@ impl Planner {
                 left: Box::new(Self::plan_expr(left)?),
                 right: Box::new(Self::plan_expr(right)?),
             }),
+            KExpr::Sh(cmd) => Ok(KernelOp::Sh(cmd.clone())),
+            KExpr::Index { target, index } => Ok(KernelOp::Index {
+                target: Box::new(Self::plan_expr(target)?),
+                index: Box::new(Self::plan_expr(index)?),
+            }),
+            KExpr::Slice { target, start, end } => Ok(KernelOp::Slice {
+                target: Box::new(Self::plan_expr(target)?),
+                start: start.as_ref().map(|s| Self::plan_expr(s).map(Box::new)).transpose()?,
+                end: end.as_ref().map(|e| Self::plan_expr(e).map(Box::new)).transpose()?,
+            }),
+            KExpr::FieldAccess { target, field } => Ok(KernelOp::FieldAccess {
+                target: Box::new(Self::plan_expr(target)?),
+                field: field.clone(),
+            }),
+            KExpr::Call { namespace, operation, args } => {
+                let planned_args = args.iter().map(Self::plan_expr).collect::<anyhow::Result<Vec<_>>>()?;
+                Ok(KernelOp::Call {
+                    namespace: namespace.clone(),
+                    operation: operation.clone(),
+                    args: planned_args,
+                })
+            }
         }
     }
 }

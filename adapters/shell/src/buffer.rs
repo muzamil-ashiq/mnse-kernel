@@ -30,7 +30,7 @@ impl EventBuffer {
     }
 
     /// Flush up to max_events from buffer and send via client
-    pub async fn flush(&self, client: &mnse_sdk::SocketClient, max_events: usize) -> Result<usize> {
+    pub async fn flush(&self, client: &mnse_sdk::AdaptiveClient, max_events: usize) -> Result<usize> {
         if !self.buffer_path.exists() {
             return Ok(0);
         }

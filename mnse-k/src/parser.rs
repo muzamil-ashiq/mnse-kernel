@@ -4,16 +4,22 @@
 
 use crate::ast::*;
 use crate::lexer::Token;
-use mnse_types::{ActionPayload, LookDirection};
 
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    in_expr_depth: usize,
+    in_call_args: bool,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            in_expr_depth: 0,
+            in_call_args: false,
+        }
     }
 
     pub fn parse_program(&mut self) -> anyhow::Result<KProgram> {
@@ -88,33 +94,6 @@ impl Parser {
                 };
                 Ok(KStatement::Summary { range })
             }
-            Token::KwSpeak => {
-                self.advance();
-                let text = self.expect_str_or_ident()?;
-                Ok(KStatement::Action(ActionPayload::Speak {
-                    text,
-                    voice: None,
-                    speed: None,
-                }))
-            }
-            Token::KwLook => {
-                self.advance();
-                let dir_str = self.expect_str_or_ident()?;
-                let dir = match dir_str.to_lowercase().as_str() {
-                    "left" => LookDirection::Left,
-                    "right" => LookDirection::Right,
-                    "down" => LookDirection::Down,
-                    "forward" => LookDirection::Forward,
-                    "trackface" => LookDirection::TrackFace,
-                    _ => LookDirection::Up,
-                };
-                Ok(KStatement::Action(ActionPayload::LookAt { direction: dir }))
-            }
-            Token::KwFollow => {
-                self.advance();
-                let target = self.expect_str_or_ident()?;
-                Ok(KStatement::Action(ActionPayload::Follow { target }))
-            }
             _ => {
                 let expr = self.parse_expr()?;
                 Ok(KStatement::Expr(expr))
@@ -131,7 +110,9 @@ impl Parser {
         };
 
         self.expect_token(Token::Assign)?;
+        self.in_expr_depth += 1;
         let val = self.parse_expr()?;
+        self.in_expr_depth -= 1;
         Ok(KStatement::Let { name, val })
     }
 
@@ -218,7 +199,7 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> anyhow::Result<KExpr> {
-        let left = self.parse_primary_expr()?;
+        let left = self.parse_postfix_expr()?;
 
         // Check pipeline operator '|'
         if self.peek() == &Token::Pipe {
@@ -234,7 +215,9 @@ impl Parser {
         match self.peek() {
             Token::EqEq | Token::Neq | Token::Gt | Token::Lt | Token::Gte | Token::Lte => {
                 let op = format!("{:?}", self.advance());
-                let right = self.parse_primary_expr()?;
+                self.in_expr_depth += 1;
+                let right = self.parse_postfix_expr()?;
+                self.in_expr_depth -= 1;
                 return Ok(KExpr::Binary {
                     op,
                     left: Box::new(left),
@@ -247,11 +230,60 @@ impl Parser {
         Ok(left)
     }
 
+    fn parse_postfix_expr(&mut self) -> anyhow::Result<KExpr> {
+        let mut expr = self.parse_primary_expr()?;
+
+        loop {
+            if self.peek() == &Token::LBracket {
+                self.advance(); // consume '['
+                self.in_expr_depth += 1;
+                if self.peek() == &Token::DotDot {
+                    self.advance(); // consume '..'
+                    let end = if self.peek() == &Token::RBracket {
+                        None
+                    } else {
+                        Some(Box::new(self.parse_expr()?))
+                    };
+                    self.expect_token(Token::RBracket)?;
+                    self.in_expr_depth -= 1;
+                    expr = KExpr::Slice { target: Box::new(expr), start: None, end };
+                } else {
+                    let first = self.parse_expr()?;
+                    if self.peek() == &Token::DotDot {
+                        self.advance(); // consume '..'
+                        let end = if self.peek() == &Token::RBracket {
+                            None
+                        } else {
+                            Some(Box::new(self.parse_expr()?))
+                        };
+                        self.expect_token(Token::RBracket)?;
+                        self.in_expr_depth -= 1;
+                        expr = KExpr::Slice { target: Box::new(expr), start: Some(Box::new(first)), end };
+                    } else {
+                        self.expect_token(Token::RBracket)?;
+                        self.in_expr_depth -= 1;
+                        expr = KExpr::Index { target: Box::new(expr), index: Box::new(first) };
+                    }
+                }
+            } else if self.peek() == &Token::Dot {
+                self.advance(); // consume '.'
+                let field = self.expect_ident()?;
+                expr = KExpr::FieldAccess { target: Box::new(expr), field };
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
+    }
+
     fn parse_pipeline_stage(&mut self) -> anyhow::Result<KExpr> {
         match self.peek() {
             Token::KwWhere => {
                 self.advance();
+                self.in_expr_depth += 1;
                 let pred = self.parse_expr()?;
+                self.in_expr_depth -= 1;
                 Ok(KExpr::Where(Box::new(pred)))
             }
             Token::KwSelect => {
@@ -348,6 +380,32 @@ impl Parser {
                 })
             }
 
+            Token::KwSh => {
+                self.advance();
+                let cmd = match self.advance().clone() {
+                    Token::Str(s) => s,
+                    t => return Err(anyhow::anyhow!("Expected shell command string or block after 'sh', found {:?}", t)),
+                };
+                Ok(KExpr::Sh(cmd))
+            }
+
+            Token::Minus => {
+                self.advance();
+                match self.peek() {
+                    Token::Num(n) => {
+                        let val = *n;
+                        self.advance();
+                        let neg = -val;
+                        if neg.fract() == 0.0 && neg >= (i64::MIN as f64) && neg <= (i64::MAX as f64) {
+                            Ok(KExpr::Literal(serde_json::Value::Number(serde_json::Number::from(neg as i64))))
+                        } else {
+                            Ok(KExpr::Literal(serde_json::json!(neg)))
+                        }
+                    }
+                    _ => Err(anyhow::anyhow!("Expected number after unary minus")),
+                }
+            }
+
             Token::Var(v) => {
                 self.advance();
                 Ok(KExpr::Var(v))
@@ -359,18 +417,67 @@ impl Parser {
             }
 
             Token::Num(n) => {
+                let val = n;
                 self.advance();
-                Ok(KExpr::Literal(serde_json::json!(n)))
+                if val.fract() == 0.0 && val >= (i64::MIN as f64) && val <= (i64::MAX as f64) {
+                    Ok(KExpr::Literal(serde_json::Value::Number(serde_json::Number::from(val as i64))))
+                } else {
+                    Ok(KExpr::Literal(serde_json::json!(val)))
+                }
             }
 
             Token::Ident(s) => {
                 self.advance();
-                if s.starts_with("current.") {
+                if self.in_call_args {
+                    match s.as_str() {
+                        "true" => Ok(KExpr::Literal(serde_json::Value::Bool(true))),
+                        "false" => Ok(KExpr::Literal(serde_json::Value::Bool(false))),
+                        "null" => Ok(KExpr::Literal(serde_json::Value::Null)),
+                        _ => Ok(KExpr::Literal(serde_json::Value::String(s))),
+                    }
+                } else if s.starts_with("current.") {
                     Ok(KExpr::Current(s[8..].to_string()))
                 } else if s.starts_with("recent.") {
                     Ok(KExpr::Recent(s[7..].to_string()))
                 } else if s.starts_with("history.") {
                     Ok(KExpr::History(s[8..].to_string()))
+                } else if s.contains('.') {
+                    let parts: Vec<&str> = s.splitn(2, '.').collect();
+                    let namespace = parts[0].to_string();
+                    let operation = parts[1].to_string();
+                    let is_capability = crate::capabilities::is_known_namespace(&namespace);
+
+                    if is_capability {
+                        let mut args = Vec::new();
+                        let prev_call_args = self.in_call_args;
+                        self.in_call_args = true;
+                        if self.peek() == &Token::LParen {
+                            self.advance(); // consume '('
+                            while self.peek() != &Token::RParen && !self.is_at_end() {
+                                args.push(self.parse_expr()?);
+                                if self.peek() == &Token::Comma {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                            self.expect_token(Token::RParen)?;
+                        } else {
+                            // Parse arguments without parens (e.g. pdf.inspect "doc.pdf")
+                            while !self.is_at_end() {
+                                match self.peek() {
+                                    Token::Semicolon | Token::Pipe | Token::RBracket | Token::RParen | Token::RBrace | Token::Eof => break,
+                                    _ => args.push(self.parse_primary_expr()?),
+                                }
+                            }
+                        }
+                        self.in_call_args = prev_call_args;
+                        Ok(KExpr::Call { namespace, operation, args })
+                    } else if self.in_expr_depth > 0 {
+                        Ok(KExpr::Var(s))
+                    } else {
+                        Ok(KExpr::Literal(serde_json::Value::String(s)))
+                    }
                 } else if s == "state" || s == "snapshot" {
                     Ok(KExpr::Current("state".to_string()))
                 } else if s == "app" {
@@ -397,11 +504,15 @@ impl Parser {
                     Ok(KExpr::Literal(serde_json::Value::Bool(false)))
                 } else if s == "null" {
                     Ok(KExpr::Literal(serde_json::Value::Null))
-                } else {
+                } else if self.in_expr_depth > 0 {
+                    Ok(KExpr::Var(s))
+                } else if self.is_at_end() || self.peek() == &Token::Semicolon {
                     anyhow::bail!(
                         "Unknown query or command: '{}'. Valid queries: current.state, recent.errors, recent.files, recent.commands, history today, summary today, adapter list, care, help.",
                         s
                     )
+                } else {
+                    Ok(KExpr::Var(s))
                 }
             }
 
@@ -543,5 +654,90 @@ mod tests {
         let mut parser3 = Parser::new(tokens3);
         let prog3 = parser3.parse_program().unwrap();
         assert_eq!(prog3.statements[0], KStatement::Expr(KExpr::History("today".into())));
+    }
+
+    #[test]
+    fn test_parse_vector_indexing_and_field_access() {
+        let mut lexer = Lexer::new("recent.errors[exit_code != 0].command");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let prog = parser.parse_program().unwrap();
+
+        match &prog.statements[0] {
+            KStatement::Expr(KExpr::FieldAccess { target, field }) => {
+                assert_eq!(field, "command");
+                match target.as_ref() {
+                    KExpr::Index { target: inner_target, index } => {
+                        assert_eq!(inner_target.as_ref(), &KExpr::Recent("errors".into()));
+                        match index.as_ref() {
+                            KExpr::Binary { op, left, right } => {
+                                assert_eq!(op, "Neq");
+                                assert_eq!(left.as_ref(), &KExpr::Var("exit_code".into()));
+                                assert_eq!(right.as_ref(), &KExpr::Literal(serde_json::json!(0)));
+                            }
+                            other => panic!("Expected Binary expr, got {:?}", other),
+                        }
+                    }
+                    other => panic!("Expected Index expr, got {:?}", other),
+                }
+            }
+            other => panic!("Expected FieldAccess, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_sh_and_capability_call() {
+        let mut lexer = Lexer::new("sh { pdftotext -layout input.pdf - }");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let prog = parser.parse_program().unwrap();
+        assert_eq!(
+            prog.statements[0],
+            KStatement::Expr(KExpr::Sh("pdftotext -layout input.pdf -".into()))
+        );
+
+        let mut lexer2 = Lexer::new("pdf.inspect \"doc.pdf\"");
+        let tokens2 = lexer2.tokenize().unwrap();
+        let mut parser2 = Parser::new(tokens2);
+        let prog2 = parser2.parse_program().unwrap();
+        assert_eq!(
+            prog2.statements[0],
+            KStatement::Expr(KExpr::Call {
+                namespace: "pdf".into(),
+                operation: "inspect".into(),
+                args: vec![KExpr::Literal(serde_json::Value::String("doc.pdf".into()))],
+            })
+        );
+    }
+
+    #[test]
+    fn test_parser_invariant_fuzzing() {
+        let keywords_and_symbols = [
+            "if", "else", "try", "catch", "sh", "where", "select", "tap", "care", "state", "app",
+            "{", "}", "(", ")", "[", "]", "..", ".", "|", "==", "!=", "<", ">", "<=", ">=",
+            "\"unclosed string", "123", "-999999999999999999999", "0.0000001", "NaN", "null",
+            "true", "false", ";", "\n", "\0", "🦀", "\u{200B}", "pdf.slice", "doc.convert",
+            "files[-1]", "commands[0..2]", "it.exit_code == 0", "&&", "||",
+        ];
+
+        let mut seed: u64 = 0xCAFEBABE;
+        for _ in 0..2000 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let num_tokens = ((seed >> 4) % 12) + 1;
+            let mut input = String::new();
+            for j in 0..num_tokens {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(j);
+                let idx = ((seed >> 8) as usize) % keywords_and_symbols.len();
+                input.push_str(keywords_and_symbols[idx]);
+                input.push(' ');
+            }
+
+            // Invariant: Lexing and parsing arbitrary inputs must NEVER panic
+            let mut lexer = Lexer::new(&input);
+            if let Ok(tokens) = lexer.tokenize() {
+                let mut parser = Parser::new(tokens);
+                let _ = parser.parse_program();
+            }
+        }
     }
 }

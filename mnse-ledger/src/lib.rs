@@ -74,6 +74,11 @@ impl Ledger {
         self.db.query_recent_events(limit)
     }
 
+    /// Query events recorded on or before a given epoch timestamp
+    pub fn query_events_before(&self, timestamp: i64, limit: usize) -> Result<Vec<Event>> {
+        self.db.query_events_before(timestamp, limit)
+    }
+
     /// Get last error event before timestamp (for causal linking)
     pub fn get_last_error_before(
         &self,

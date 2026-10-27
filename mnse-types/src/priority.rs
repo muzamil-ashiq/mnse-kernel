@@ -1,8 +1,7 @@
 //! Priority levels for event routing in the EventBus.
 //!
 //! High-priority events get routed first regardless of queue depth.
-//! This enables the Reflex Layer: sensor event → actuator response in <5ms
-//! for critical hardware signals (FallDetected, ObstacleDetected).
+//! Fast-path dispatch is used for critical error detection and fast response.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +11,6 @@ pub enum Priority {
     Low    = 0,
     Medium = 1,
     High   = 2,
-    /// Reflex path — bypasses ledger/graph, direct sensor→actuator routing
     Critical = 3,
 }
 
@@ -24,24 +22,23 @@ impl Default for Priority {
 
 impl Priority {
     /// Default priority assignment based on event type name.
-    /// The Rhai RuleEngine can override this per-event.
     pub fn from_event_type_name(name: &str) -> Self {
         match name {
-            // Critical: direct hardware reflex path
-            "ObstacleDetected" | "FallDetected" | "EmergencyStop" => Self::Critical,
-
-            // High: user needs to know immediately
-            "ErrorDetected" | "WakeWordDetected" | "ActionRequested" => Self::High,
+            // High: user / agent needs to know immediately
+            "ErrorDetected" => Self::High,
 
             // Medium: normal activity
-            "ProcessExecuted" | "WindowFocused" | "FileSwitched"
-            | "UrlChanged" | "PersonVisible" | "PersonGone"
-            | "TranscriptionResult" | "DiagnosticsUpdated"
-            | "WorkspaceChanged" | "ClipboardChanged" | "DirectoryChanged"
-            | "AgentStarted" | "AgentEnded"
-            | "AdapterConnected" | "AdapterDisconnected" => Self::Medium,
+            "ProcessExecuted"
+            | "WindowFocused"
+            | "FileSwitched"
+            | "DiagnosticsUpdated"
+            | "WorkspaceChanged"
+            | "ClipboardChanged"
+            | "DirectoryChanged"
+            | "AdapterConnected"
+            | "AdapterDisconnected" => Self::Medium,
 
-            // Low: noise and housekeeping (many of these never reach SQLite anyway)
+            // Low: noise and housekeeping
             _ => Self::Low,
         }
     }
@@ -69,7 +66,7 @@ mod tests {
     }
 
     #[test]
-    fn wake_word_is_high_priority() {
-        assert_eq!(Priority::from_event_type_name("WakeWordDetected"), Priority::High);
+    fn process_executed_is_medium_priority() {
+        assert_eq!(Priority::from_event_type_name("ProcessExecuted"), Priority::Medium);
     }
 }

@@ -1,6 +1,5 @@
 //! Abstract Syntax Tree (AST) definitions for K Language.
 
-use mnse_types::ActionPayload;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -53,9 +52,6 @@ pub enum KStatement {
         name: Option<String>,
     },
 
-    /// Action dispatch (`speak "hello"`, `look "up"`)
-    Action(ActionPayload),
-
     /// Help command (`k help`)
     Help,
 }
@@ -91,6 +87,35 @@ pub enum KExpr {
 
     /// Literal value (string, number, boolean, object, list)
     Literal(serde_json::Value),
+
+    /// Sandboxed Shell execution: `sh { pdftotext $file - }` or `sh "echo $x"`
+    Sh(String),
+
+    /// Vector indexing or predicate filter: `target[index_or_pred]`
+    Index {
+        target: Box<KExpr>,
+        index: Box<KExpr>,
+    },
+
+    /// Range slice: `target[start..end]`
+    Slice {
+        target: Box<KExpr>,
+        start: Option<Box<KExpr>>,
+        end: Option<Box<KExpr>>,
+    },
+
+    /// Property / Field access: `target.field`
+    FieldAccess {
+        target: Box<KExpr>,
+        field: String,
+    },
+
+    /// Capability invocation: `pdf.extract("doc.pdf")`, `doc.convert("a.docx", "pdf")`
+    Call {
+        namespace: String,
+        operation: String,
+        args: Vec<KExpr>,
+    },
 
     /// Chained pipeline: expr | expr | expr
     Pipeline(Vec<KExpr>),

@@ -20,6 +20,7 @@ pub enum SocketCommand {
     Snapshot { format: Option<String> },
     Emit { event: Event },
     Adapter { action: String, name: Option<String> },
+    Tap { adapter: Option<String>, raw: Option<bool> },
 }
 
 #[derive(Debug, Serialize)]
@@ -62,6 +63,38 @@ pub async fn start_socket_server(socket_path: &str, state: AppState) -> anyhow::
                     while let Ok(Some(line)) = lines.next_line().await {
                         if line.trim().is_empty() {
                             continue;
+                        }
+
+                        // Handle Creator Tap streaming command
+                        if let Ok(SocketCommand::Tap { adapter, raw }) = serde_json::from_str::<SocketCommand>(&line) {
+                            let resp = SocketResponse {
+                                status: "streaming".to_string(),
+                                data: None,
+                            };
+                            let json_resp = serde_json::to_string(&resp).unwrap_or_default();
+                            if writer.write_all(format!("{}\n", json_resp).as_bytes()).await.is_err() {
+                                break;
+                            }
+
+                            let mut rx = state_clone.bus.subscribe();
+                            let is_raw = raw.unwrap_or(false);
+                            while let Ok(mut event) = rx.recv().await {
+                                if let Some(ref target) = adapter {
+                                    let matches = event.observed_by.eq_ignore_ascii_case(target)
+                                        || format!("{:?}", event.source).eq_ignore_ascii_case(target);
+                                    if !matches {
+                                        continue;
+                                    }
+                                }
+                                if !is_raw {
+                                    state_clone.redactor.redact_event(&mut event);
+                                }
+                                let ev_json = serde_json::to_string(&event).unwrap_or_default();
+                                if writer.write_all(format!("{}\n", ev_json).as_bytes()).await.is_err() {
+                                    break;
+                                }
+                            }
+                            break;
                         }
 
                         let resp = handle_socket_line(&line, &state_clone).await;
@@ -182,6 +215,10 @@ async fn handle_socket_line(line: &str, state: &AppState) -> SocketResponse {
                     status: "error".to_string(),
                     data: Some(serde_json::Value::String(format!("Unknown action: {}", action))),
                 },
+            },
+            SocketCommand::Tap { .. } => SocketResponse {
+                status: "ok".to_string(),
+                data: Some(serde_json::Value::String("Tap stream established".into())),
             },
         }
     } else if let Ok(mut event) = serde_json::from_str::<Event>(line) {

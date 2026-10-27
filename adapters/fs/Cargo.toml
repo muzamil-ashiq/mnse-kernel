@@ -16,3 +16,6 @@ notify     = { workspace = true }
 tracing    = { workspace = true }
 tracing-subscriber = { workspace = true }
 dirs       = "5.0"
+
+[dev-dependencies]
+tempfile   = { workspace = true }
